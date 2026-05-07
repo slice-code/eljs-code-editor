@@ -979,6 +979,7 @@
       enableBasicAutocompletion: true,
       enableLiveAutocompletion: true,
       enableSnippets: true,
+      fontSize: 15,
     });
 
     // Auto-save and auto-run on editor change
