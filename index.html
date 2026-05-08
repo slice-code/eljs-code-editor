@@ -7,6 +7,14 @@
     <title>el.js - code-editor by slice-code.com</title>
     <link rel="icon" href="./icon.ico" type="image/x-icon">
     <link rel="shortcut icon" href="./icon.ico" type="image/x-icon">
+    
+    <!-- PWA Support -->
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="el.js">
+    <link rel="apple-touch-icon" href="./icon.ico">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css"
         integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw=="
@@ -22,6 +30,21 @@
     <script src="./el.js?v=1.0.3"></script>
     <script src="./code-editor/zip.js?v=1.0.3"></script>
     <script src="./layouting/layout.js?v=1.0.3"></script>
+    
+    <!-- Register Service Worker for PWA -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./service-worker.js')
+            .then((registration) => {
+              console.log('ServiceWorker registration successful');
+            })
+            .catch((error) => {
+              console.log('ServiceWorker registration failed:', error);
+            });
+        });
+      }
+    </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
         await import('./code-editor/code.js?v=1.0.3')

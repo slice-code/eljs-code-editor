@@ -1,0 +1,20 @@
+{
+  "name": "el.js Code Editor",
+  "short_name": "el.js",
+  "description": "A lightweight DOM manipulation library with fluent chaining API and code editor",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#0f172a",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icon.ico",
+      "sizes": "any",
+      "type": "image/x-icon",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["development", "productivity"],
+  "lang": "en"
+}
