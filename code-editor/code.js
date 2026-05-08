@@ -2839,12 +2839,11 @@
 
     // Resizable preview iframe
     var hResizer = connector.hResizer;
-    var preview = connector.preview;
-    var hParent = preview.parentElement;
+    var hParent = connector.hResizer.parentElement;
 
     hResizer.addEventListener('mousedown', function(e) {
       document.body.style.userSelect = 'none';
-      preview.style.pointerEvents = 'none';
+      if (connector.preview) connector.preview.style.pointerEvents = 'none';
       document.addEventListener('mousemove', doHDrag);
       document.addEventListener('mouseup', stopHDrag);
       e.preventDefault();
@@ -2854,13 +2853,15 @@
       var rect = hParent.getBoundingClientRect();
       var newWidth = rect.right - e.clientX - 3;
       if (newWidth < 200) newWidth = 200;
-      if (newWidth > rect.width - 506) newWidth = rect.width - 506;
-      preview.style.width = newWidth + 'px';
+      var maxWidth = rect.width - 506;
+      if (maxWidth < 200) maxWidth = 200;
+      if (newWidth > maxWidth) newWidth = maxWidth;
+      if (connector.preview) connector.preview.style.width = newWidth + 'px';
     }
 
     function stopHDrag() {
       document.body.style.userSelect = '';
-      preview.style.pointerEvents = '';
+      if (connector.preview) connector.preview.style.pointerEvents = '';
       document.removeEventListener('mousemove', doHDrag);
       document.removeEventListener('mouseup', stopHDrag);
     }
