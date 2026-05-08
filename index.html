@@ -27,17 +27,40 @@
 
 <body class="bg-gray-50 min-h-screen">
     <div id="app"></div>
-    <script src="./el.js?v=1.0.3"></script>
-    <script src="./code-editor/zip.js?v=1.0.3"></script>
-    <script src="./layouting/layout.js?v=1.0.3"></script>
+    <script src="./el.js?v=1.0.4"></script>
+    <script src="./code-editor/zip.js?v=1.0.4"></script>
+    <script src="./layouting/layout.js?v=1.0.4"></script>
     
     <!-- Register Service Worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./service-worker.js')
+          navigator.serviceWorker.register('./service-worker.js?v=1.0.4')
             .then((registration) => {
               console.log('ServiceWorker registration successful');
+              
+              // Check for updates
+              registration.addEventListener('updatefound', () => {
+                const newWorker = registration.installing;
+                
+                newWorker.addEventListener('statechange', () => {
+                  console.log('ServiceWorker state changed:', newWorker.state);
+                  
+                  // When new service worker is installed and waiting
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    // Show update notification
+                    if (confirm('New version available! Reload to update?')) {
+                      // Tell waiting service worker to take over
+                      newWorker.postMessage({ type: 'SKIP_WAITING' });
+                      
+                      // Reload page when service worker is ready
+                      navigator.serviceWorker.addEventListener('controllerchange', () => {
+                        window.location.reload();
+                      }, { once: true });
+                    }
+                  }
+                });
+              });
             })
             .catch((error) => {
               console.log('ServiceWorker registration failed:', error);
@@ -47,8 +70,8 @@
     </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
-        await import('./code-editor/code.js?v=1.0.3')
-        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.3')
+        await import('./code-editor/code.js?v=1.0.4')
+        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.4')
 
         console.log(codeEditorEl)
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'eljs-cache-v1';
+const CACHE_NAME = 'eljs-cache-v2';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const ASSETS_TO_CACHE = [
   './layouting/layout.js',
   './code-editor/code.js',
   './code-editor/zip.js',
+  './code-editor/ace/ace.js',
   './documentation-page.js',
   './index.js',
   './icon.ico',
@@ -15,39 +16,54 @@ const ASSETS_TO_CACHE = [
 
 // Install event - cache assets
 self.addEventListener('install', (event) => {
+  console.log('[ServiceWorker] Install');
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => {
-        console.log('Caching app assets');
+        console.log('[ServiceWorker] Caching app assets');
         return cache.addAll(ASSETS_TO_CACHE);
       })
-      .then(() => self.skipWaiting())
+      .then(() => {
+        console.log('[ServiceWorker] Skip waiting');
+        return self.skipWaiting();
+      })
   );
 });
 
 // Activate event - clean old caches
 self.addEventListener('activate', (event) => {
+  console.log('[ServiceWorker] Activate');
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
           .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
+          .map((name) => {
+            console.log('[ServiceWorker] Deleting old cache:', name);
+            return caches.delete(name);
+          })
       );
-    }).then(() => self.clients.claim())
+    }).then(() => {
+      console.log('[ServiceWorker] Clients claim');
+      return self.clients.claim();
+    })
   );
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - serve from cache, fallback to network (cache-first strategy)
 self.addEventListener('fetch', (event) => {
+  // Skip non-GET requests
+  if (event.request.method !== 'GET') return;
+  
   event.respondWith(
     caches.match(event.request)
       .then((response) => {
-        // Return cached version or fetch from network
+        // Return cached version if found
         if (response) {
           return response;
         }
         
+        // Fetch from network
         return fetch(event.request).then((response) => {
           // Don't cache if not a valid response
           if (!response || response.status !== 200 || response.type !== 'basic') {
@@ -65,5 +81,19 @@ self.addEventListener('fetch', (event) => {
           return response;
         });
       })
+      .catch(() => {
+        // Return offline fallback if both cache and network fail
+        if (event.request.destination === 'document') {
+          return caches.match('./index.html');
+        }
+      })
   );
+});
+
+// Message event - handle skipWaiting from client
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    console.log('[ServiceWorker] Skipping waiting on message');
+    self.skipWaiting();
+  }
 });
