@@ -74,46 +74,54 @@
   }
 
   function saveFile(name, content) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(FILE_STORE, 'readwrite');
-      tx.objectStore(FILE_STORE).put({ project: currentProject, name: name, content: content });
-      tx.oncomplete = function() { resolve(); };
-      tx.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(FILE_STORE, 'readwrite');
+        tx.objectStore(FILE_STORE).put({ project: currentProject, name: name, content: content });
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function loadFile(name) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(FILE_STORE, 'readonly');
-      var req = tx.objectStore(FILE_STORE).get([currentProject, name]);
-      req.onsuccess = function(e) { resolve(e.target.result ? e.target.result.content : null); };
-      req.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(FILE_STORE, 'readonly');
+        var req = tx.objectStore(FILE_STORE).get([currentProject, name]);
+        req.onsuccess = function(e) { resolve(e.target.result ? e.target.result.content : null); };
+        req.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function listFiles() {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(FILE_STORE, 'readonly');
-      var store = tx.objectStore(FILE_STORE);
-      var req = store.getAll();
-      req.onsuccess = function(e) {
-        var results = e.target.result.filter(function(f) { return f.project === currentProject; });
-        resolve(results.map(function(f) { return f.name; }));
-      };
-      req.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(FILE_STORE, 'readonly');
+        var store = tx.objectStore(FILE_STORE);
+        var req = store.getAll();
+        req.onsuccess = function(e) {
+          var results = e.target.result.filter(function(f) { return f.project === currentProject; });
+          resolve(results.map(function(f) { return f.name; }));
+        };
+        req.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function deleteFile(name) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(FILE_STORE, 'readwrite');
-      tx.objectStore(FILE_STORE).delete([currentProject, name]);
-      tx.oncomplete = function() { 
-        // Clean up undo/redo stacks for deleted file
-        cleanupFileStacks(name);
-        resolve(); 
-      };
-      tx.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(FILE_STORE, 'readwrite');
+        tx.objectStore(FILE_STORE).delete([currentProject, name]);
+        tx.oncomplete = function() { 
+          // Clean up undo/redo stacks for deleted file
+          cleanupFileStacks(name);
+          resolve(); 
+        };
+        tx.onerror = function(e) { reject(e); };
+      });
     });
   }
 
@@ -152,7 +160,7 @@
   }
 
   function renameFile(oldName, newName) {
-    return new Promise(function(resolve, reject) {
+    return ensureDB().then(function() { return new Promise(function(resolve, reject) {
       // Use current editor content if this file is open (captures unsaved changes)
       var content = (currentFile === oldName) ? editor.getValue() : null;
 
@@ -175,30 +183,34 @@
           doRename(fileContent);
         }).catch(function(e) { reject(e); });
       }
-    });
+    }); });
   }
 
   // ===== Project Helpers =====
   function saveProject() {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(PROJECT_STORE, 'readwrite');
-      tx.objectStore(PROJECT_STORE).put({ name: currentProject, updatedAt: Date.now() });
-      tx.oncomplete = function() { resolve(); };
-      tx.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(PROJECT_STORE, 'readwrite');
+        tx.objectStore(PROJECT_STORE).put({ name: currentProject, updatedAt: Date.now() });
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function listProjects() {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(PROJECT_STORE, 'readonly');
-      var req = tx.objectStore(PROJECT_STORE).getAll();
-      req.onsuccess = function(e) { resolve(e.target.result || []); };
-      req.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(PROJECT_STORE, 'readonly');
+        var req = tx.objectStore(PROJECT_STORE).getAll();
+        req.onsuccess = function(e) { resolve(e.target.result || []); };
+        req.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function deleteProject(name) {
-    return new Promise(function(resolve, reject) {
+    return ensureDB().then(function() { return new Promise(function(resolve, reject) {
       // Delete project entry
       var tx = db.transaction(PROJECT_STORE, 'readwrite');
       tx.objectStore(PROJECT_STORE).delete(name);
@@ -214,7 +226,7 @@
         tx2.oncomplete = function() { resolve(); };
       };
       tx.onerror = function(e) { reject(e); };
-    });
+    }); });
   }
 
   function loadProject(name) {
@@ -237,6 +249,7 @@
   }
 
   function renameProject(oldName, newName) {
+    ensureDB().then(function() {
     // Copy all files to new project name, delete old ones
     var tx = db.transaction(FILE_STORE, 'readwrite');
     var store = tx.objectStore(FILE_STORE);
@@ -260,6 +273,7 @@
         appendLog('info', ['Project renamed to "' + newName + '".']);
       };
     };
+    });
   }
 
   function showProjectLoadDialog() {
