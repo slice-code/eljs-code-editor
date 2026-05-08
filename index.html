@@ -27,15 +27,15 @@
 
 <body class="bg-gray-50 min-h-screen">
     <div id="app"></div>
-    <script src="./el.js?v=1.0.4"></script>
-    <script src="./code-editor/zip.js?v=1.0.4"></script>
-    <script src="./layouting/layout.js?v=1.0.4"></script>
+    <script src="./el.js?v=1.0.5"></script>
+    <script src="./code-editor/zip.js?v=1.0.5"></script>
+    <script src="./layouting/layout.js?v=1.0.5"></script>
     
     <!-- Register Service Worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./service-worker.js?v=1.0.4')
+          navigator.serviceWorker.register('./service-worker.js?v=1.0.5')
             .then((registration) => {
               console.log('ServiceWorker registration successful');
               
@@ -70,8 +70,8 @@
     </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
-        await import('./code-editor/code.js?v=1.0.4')
-        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.4')
+        await import('./code-editor/code.js?v=1.0.5')
+        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.5')
 
         console.log(codeEditorEl)
 

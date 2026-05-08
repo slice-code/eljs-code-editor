@@ -230,21 +230,39 @@
   }
 
   function loadProject(name) {
+    console.log('[loadProject] Loading project:', name);
     currentProject = name;
     localStorage.setItem('elcode-lastProject', name);
     connector.projectName.textContent = name;
     currentFile = null;
     isLoadingFile = true;
     editor.setValue('', -1);
-    isLoadingFile = false;
+    
+    // Clear all file sessions when switching projects
+    fileSessions = {};
+    console.log('[loadProject] Cleared file sessions');
+    
     refreshFileList();
     listFiles().then(function(files) {
+      console.log('[loadProject] Files in project:', files);
       if (files.indexOf('main.js') !== -1) {
+        console.log('[loadProject] Opening main.js');
         openFile('main.js');
       } else if (files.length > 0) {
+        console.log('[loadProject] Opening first file:', files[0]);
         openFile(files[0]);
+      } else {
+        // No files in project, clear editor
+        console.log('[loadProject] No files in project');
+        isLoadingFile = false;
       }
-      setTimeout(function() { runPreview(); }, 300);
+      setTimeout(function() { 
+        console.log('[loadProject] Running preview');
+        runPreview(); 
+      }, 300);
+    }).catch(function(err) {
+      console.error('[loadProject] Failed to list files:', err);
+      isLoadingFile = false;
     });
   }
 
@@ -1852,9 +1870,12 @@
     isLoadingFile = true;
     
     loadFile(name).then(function(content) {
+      console.log('[openFile] Loading file:', name, 'Content length:', content ? content.length : 0);
+      
       // Check if we have an existing session for this file
       if (fileSessions[name]) {
         // Switch to existing session (preserves undo/redo history)
+        console.log('[openFile] Using cached session for:', name);
         editor.setSession(fileSessions[name]);
       } else {
         // Create new session for this file
@@ -1871,11 +1892,16 @@
         
         fileSessions[name] = session;
         editor.setSession(session);
+        console.log('[openFile] Created new session for:', name);
       }
       
       editor.moveCursorTo(0, 0);
       isLoadingFile = false;
+      console.log('[openFile] File loaded successfully:', name);
       refreshFileList();
+    }).catch(function(err) {
+      console.error('[openFile] Failed to load file:', name, err);
+      isLoadingFile = false;
     });
   }
 
@@ -2316,12 +2342,20 @@
         ).click(function() {
           var name = prompt('New project name:', 'New Project');
           if (name && name.trim()) {
+            console.log('[New Project] Creating project:', name.trim());
             currentProject = name.trim();
             localStorage.setItem('elcode-lastProject', currentProject);
             connector.projectName.textContent = currentProject;
+                    
+            // Clear state for new project
             currentFile = null;
+            fileSessions = {};
+            isLoadingFile = true;
             editor.setValue('', -1);
-            saveFile('main.js', "// ============================================\n"
+            console.log('[New Project] Cleared editor state');
+                    
+            // Save main.js with default template
+            var defaultTemplate = "// ============================================\n"
               + "// el.js Editor - Getting Started\n"
               + "// ============================================\n"
               + "// el.js is a lightweight DOM builder. Create elements with `el(tag)`,\n"
@@ -2363,14 +2397,24 @@
               + "// 4. Append it: app.appendChild(myCard.get());\n\n"
               + "// --- Render everything ---\n"
               + "let container = el('div').padding('10px').child([title, subtitle, card]);\n"
-              + "app.appendChild(container.get());\n"
-            ).then(function() {
+              + "app.appendChild(container.get());\n";
+                    
+            saveFile('main.js', defaultTemplate).then(function() {
+              console.log('[New Project] main.js saved to IndexedDB');
               return saveProject();
             }).then(function() {
+              console.log('[New Project] Project saved, opening main.js');
               refreshFileList();
               openFile('main.js');
-              setTimeout(function() { runPreview(); }, 300);
+              setTimeout(function() { 
+                console.log('[New Project] Running preview');
+                runPreview(); 
+              }, 300);
               appendLog('info', ['New project "' + currentProject + '" created.']);
+            }).catch(function(err) {
+              console.error('[New Project] Failed to create project:', err);
+              isLoadingFile = false;
+              appendLog('error', ['Failed to create new project: ' + (err.message || err)]);
             });
           }
         }),
