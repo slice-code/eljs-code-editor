@@ -40,6 +40,7 @@
   const PROJECT_STORE = 'projects';
   const SETTINGS_STORE = 'settings';
   var db = null;
+  var dbInitPromise = null;
 
   function openDB() {
     return new Promise(function(resolve, reject) {
@@ -59,6 +60,17 @@
       req.onsuccess = function(e) { db = e.target.result; resolve(db); };
       req.onerror = function(e) { reject(e); };
     });
+  }
+
+  function ensureDB() {
+    if (db) return Promise.resolve(db);
+    if (!dbInitPromise) {
+      dbInitPromise = openDB().catch(function(err) {
+        dbInitPromise = null;
+        throw err;
+      });
+    }
+    return dbInitPromise;
   }
 
   function saveFile(name, content) {
@@ -107,29 +119,35 @@
 
   // ===== Settings Helpers =====
   function saveSetting(key, value) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(SETTINGS_STORE, 'readwrite');
-      tx.objectStore(SETTINGS_STORE).put({ key: key, value: value });
-      tx.oncomplete = function() { resolve(); };
-      tx.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(SETTINGS_STORE, 'readwrite');
+        tx.objectStore(SETTINGS_STORE).put({ key: key, value: value });
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function loadSetting(key) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(SETTINGS_STORE, 'readonly');
-      var req = tx.objectStore(SETTINGS_STORE).get(key);
-      req.onsuccess = function(e) { resolve(e.target.result ? e.target.result.value : null); };
-      req.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(SETTINGS_STORE, 'readonly');
+        var req = tx.objectStore(SETTINGS_STORE).get(key);
+        req.onsuccess = function(e) { resolve(e.target.result ? e.target.result.value : null); };
+        req.onerror = function(e) { reject(e); };
+      });
     });
   }
 
   function deleteSetting(key) {
-    return new Promise(function(resolve, reject) {
-      var tx = db.transaction(SETTINGS_STORE, 'readwrite');
-      tx.objectStore(SETTINGS_STORE).delete(key);
-      tx.oncomplete = function() { resolve(); };
-      tx.onerror = function(e) { reject(e); };
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(SETTINGS_STORE, 'readwrite');
+        tx.objectStore(SETTINGS_STORE).delete(key);
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function(e) { reject(e); };
+      });
     });
   }
 
