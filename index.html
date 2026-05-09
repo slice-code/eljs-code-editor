@@ -100,7 +100,8 @@
         const { createDocumentationPage } = await import('./documentation-page.js?v=1.1.6')
         const { createStorePage } = await import('./store.js?v=1.1.6')
         const { createStoreDetailPage } = await import('./store-detail.js?v=1.1.6')
-        const { createMyPublishPage } = await import('./my-publish.js?v=1.1.6')6        let editorLoaded = false;
+        const { createMyPublishPage } = await import('./my-publish.js?v=1.1.6')
+        let editorLoaded = false;
 
         layout.addPage({
           path: '/',
@@ -236,7 +237,8 @@
           hideLayout: true,
           component: async () => {
             if (!editorLoaded) {
-              await import('./code-editor/code.js?v=1.1.6')6              editorLoaded = true
+              await import('./code-editor/code.js?v=1.1.6')              
+              editorLoaded = true
             }
             return el('div').child([ codeEditorEl.container ]);
           },
