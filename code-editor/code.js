@@ -18,6 +18,11 @@
   var aceSnippetManager = null;
   var builtInSnippets = [];
   var customSnippets = [];
+  var authUser = null;
+  var apiProjectId = null;
+  var pendingThumbnailRequest = null;
+  var isPublishing = false;
+  var headerDropdownMenus = [];
   
   // Per-file sessions to maintain separate undo/redo history
   var fileSessions = {};
@@ -232,6 +237,7 @@
   function loadProject(name) {
     console.log('[loadProject] Loading project:', name);
     currentProject = name;
+    apiProjectId = null;
     localStorage.setItem('elcode-lastProject', name);
     connector.projectName.textContent = name;
     currentFile = null;
@@ -291,6 +297,501 @@
         appendLog('info', ['Project renamed to "' + newName + '".']);
       };
     };
+    });
+  }
+
+  function apiRequest(path, options) {
+    var requestOptions = options || {};
+    requestOptions.credentials = 'include';
+    if (!requestOptions.headers) requestOptions.headers = {};
+    return fetch(path, requestOptions).then(function(res) {
+      return res.json().catch(function() { return {}; }).then(function(body) {
+        if (!res.ok || body.success === false) {
+          var message = (body && body.error && body.error.message) || body.message || ('Request failed (' + res.status + ')');
+          var err = new Error(message);
+          err.status = res.status;
+          err.body = body;
+          throw err;
+        }
+        return body;
+      });
+    });
+  }
+
+  function updateAuthUi() {
+    if (!connector.authStatus || !connector.authActionBtn || !connector.authRegisterBtn || !connector.authLogoutBtn || !connector.publishBtn) return;
+    if (authUser) {
+      connector.authStatus.textContent = 'Hi, ' + (authUser.name || authUser.email || 'User');
+      connector.authActionBtn.textContent = 'Session';
+      connector.authActionBtn.style.background = '#2563eb';
+      connector.authRegisterBtn.style.display = 'none';
+      connector.authLogoutBtn.style.display = 'block';
+      if (!isPublishing) {
+        connector.publishBtn.textContent = 'Publish';
+        connector.publishBtn.disabled = false;
+        connector.publishBtn.style.opacity = '1';
+        connector.publishBtn.style.cursor = 'pointer';
+      }
+    } else {
+      connector.authStatus.textContent = 'Not logged in';
+      connector.authActionBtn.textContent = 'Login';
+      connector.authActionBtn.style.background = '#16a34a';
+      connector.authRegisterBtn.style.display = 'block';
+      connector.authLogoutBtn.style.display = 'none';
+      if (!isPublishing) {
+        connector.publishBtn.textContent = 'Publish';
+        connector.publishBtn.disabled = true;
+        connector.publishBtn.style.opacity = '0.6';
+        connector.publishBtn.style.cursor = 'not-allowed';
+      }
+    }
+  }
+
+  function setPublishLoadingState(loading) {
+    isPublishing = !!loading;
+    if (!connector.publishBtn) return;
+    if (isPublishing) {
+      connector.publishBtn.textContent = 'Publishing...';
+      connector.publishBtn.disabled = true;
+      connector.publishBtn.style.opacity = '0.75';
+      connector.publishBtn.style.cursor = 'progress';
+      return;
+    }
+    updateAuthUi();
+  }
+
+  function closeHeaderDropdowns() {
+    headerDropdownMenus.forEach(function(menuEl) {
+      if (menuEl) menuEl.style.display = 'none';
+    });
+  }
+
+  function createHeaderDropdown(label, buttonBg, items) {
+    var menuRef = {};
+    var container = el('div').css({ position: 'relative' });
+    var button = el('button').text(label).css({
+      padding: '4px 12px', background: buttonBg, color: '#fff', border: 'none',
+      borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
+    }).click(function(e) {
+      e.stopPropagation();
+      var menuNode = menuRef.menu;
+      if (!menuNode) return;
+      var willOpen = menuNode.style.display !== 'block';
+      closeHeaderDropdowns();
+      menuNode.style.display = willOpen ? 'block' : 'none';
+    });
+
+    var menu = el('div').link(menuRef, 'menu').css({
+      position: 'absolute',
+      right: '0',
+      top: 'calc(100% + 6px)',
+      minWidth: '170px',
+      background: '#1f2937',
+      border: '1px solid #374151',
+      borderRadius: '6px',
+      boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
+      display: 'none',
+      zIndex: '2000',
+      padding: '6px'
+    }).child(items.map(function(item) {
+      var menuItem = el('a').text(item.label).css({
+        display: 'block',
+        color: item.color || '#e5e7eb',
+        textDecoration: 'none',
+        padding: '7px 9px',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        fontFamily: 'sans-serif'
+      }).hover(
+        function() { this.style.backgroundColor = '#334155'; },
+        function() { this.style.backgroundColor = 'transparent'; }
+      ).click(function(e) {
+        e.stopPropagation();
+        closeHeaderDropdowns();
+        if (item.onClick) item.onClick();
+      });
+      if (item.linkName) {
+        menuItem.link(connector, item.linkName);
+      }
+      return menuItem;
+    }));
+
+    var node = container.child([button, menu]).get();
+    if (menuRef.menu) headerDropdownMenus.push(menuRef.menu);
+    return node;
+  }
+
+  function refreshAuthState() {
+    return apiRequest('/api/editor/auth/me', { method: 'GET' })
+      .then(function(resp) {
+        authUser = resp.data || null;
+        updateAuthUi();
+        return authUser;
+      })
+      .catch(function() {
+        authUser = null;
+        updateAuthUi();
+        return null;
+      });
+  }
+
+  function showLoginDialog() {
+    var overlayNode;
+    function closeDialog() {
+      if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
+    }
+
+    var emailInput = el('input').attr('type', 'email').attr('placeholder', 'email').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var passwordInput = el('input').attr('type', 'password').attr('placeholder', 'password').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var overlay = el('div').css({
+      position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+      background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: '99999', fontFamily: 'sans-serif'
+    });
+    var box = el('div').css({
+      background: '#2d2d2d', borderRadius: '8px', padding: '20px', width: '360px',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+    }).child([
+      el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '12px' }).text('Login untuk Publish'),
+      el('div').css({ marginBottom: '10px' }).child([el(emailInput)]),
+      el('div').css({ marginBottom: '16px' }).child([el(passwordInput)]),
+      el('div').css({ display: 'flex', justifyContent: 'flex-end', gap: '8px' }).child([
+        el('button').text('Cancel').css({
+          padding: '6px 12px', background: '#555', color: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() { closeDialog(); }),
+        el('button').text('Login').css({
+          padding: '6px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() {
+          var email = String(emailInput.value || '').trim();
+          var password = String(passwordInput.value || '');
+          if (!email || !password) {
+            appendLog('error', ['Email dan password wajib diisi.']);
+            return;
+          }
+          apiRequest('/api/editor/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, password: password })
+          }).then(function() {
+            closeDialog();
+            appendLog('info', ['Login berhasil.']);
+            return refreshAuthState();
+          }).catch(function(err) {
+            appendLog('error', ['Login gagal: ' + (err.message || err)]);
+          });
+        })
+      ])
+    ]);
+    overlay.child([box]);
+    overlayNode = overlay.get();
+    document.body.appendChild(overlayNode);
+  }
+
+  function showRegisterDialog() {
+    var overlayNode;
+    function closeDialog() {
+      if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
+    }
+
+    var nameInput = el('input').attr('type', 'text').attr('placeholder', 'name').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var emailInput = el('input').attr('type', 'email').attr('placeholder', 'email').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var passwordInput = el('input').attr('type', 'password').attr('placeholder', 'password (min 8)').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var confirmInput = el('input').attr('type', 'password').attr('placeholder', 'confirm password').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+
+    var overlay = el('div').css({
+      position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+      background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: '99999', fontFamily: 'sans-serif'
+    });
+    var box = el('div').css({
+      background: '#2d2d2d', borderRadius: '8px', padding: '20px', width: '380px',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+    }).child([
+      el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '12px' }).text('Daftar akun editor'),
+      el('div').css({ marginBottom: '10px' }).child([el(nameInput)]),
+      el('div').css({ marginBottom: '10px' }).child([el(emailInput)]),
+      el('div').css({ marginBottom: '10px' }).child([el(passwordInput)]),
+      el('div').css({ marginBottom: '16px' }).child([el(confirmInput)]),
+      el('div').css({ display: 'flex', justifyContent: 'flex-end', gap: '8px' }).child([
+        el('button').text('Cancel').css({
+          padding: '6px 12px', background: '#555', color: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() { closeDialog(); }),
+        el('button').text('Register').css({
+          padding: '6px 12px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() {
+          var name = String(nameInput.value || '').trim();
+          var email = String(emailInput.value || '').trim();
+          var password = String(passwordInput.value || '');
+          var passwordConfirmation = String(confirmInput.value || '');
+
+          if (!name || !email || !password || !passwordConfirmation) {
+            appendLog('error', ['Semua field register wajib diisi.']);
+            return;
+          }
+          if (password.length < 8) {
+            appendLog('error', ['Password minimal 8 karakter.']);
+            return;
+          }
+          if (password !== passwordConfirmation) {
+            appendLog('error', ['Konfirmasi password tidak sama.']);
+            return;
+          }
+
+          apiRequest('/api/editor/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: name,
+              email: email,
+              password: password,
+              password_confirmation: passwordConfirmation
+            })
+          }).then(function() {
+            closeDialog();
+            appendLog('info', ['Register berhasil. Anda sudah login.']);
+            return refreshAuthState();
+          }).catch(function(err) {
+            appendLog('error', ['Register gagal: ' + (err.message || err)]);
+          });
+        })
+      ])
+    ]);
+    overlay.child([box]);
+    overlayNode = overlay.get();
+    document.body.appendChild(overlayNode);
+  }
+
+  function collectProjectFiles() {
+    return listFiles().then(function(files) {
+      var loadPromises = files.map(function(name) {
+        return loadFile(name).then(function(content) { return { name: name, content: content || '' }; });
+      });
+      return Promise.all(loadPromises);
+    }).then(function(allFiles) {
+      if (currentFile && editor && !isLoadingFile) {
+        var found = false;
+        for (var i = 0; i < allFiles.length; i++) {
+          if (allFiles[i].name === currentFile) {
+            allFiles[i].content = editor.getValue();
+            found = true;
+            break;
+          }
+        }
+        if (!found) allFiles.push({ name: currentFile, content: editor.getValue() });
+      }
+      return allFiles;
+    });
+  }
+
+  function ensureRemoteProject() {
+    if (apiProjectId) return Promise.resolve(apiProjectId);
+    return apiRequest('/api/editor/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: currentProject, description: 'Created from el.js editor', template: 'default' })
+    }).then(function(resp) {
+      apiProjectId = resp.data && resp.data.project_id;
+      if (!apiProjectId) throw new Error('project_id tidak ditemukan dari API');
+      return apiProjectId;
+    });
+  }
+
+  function syncProjectToApi() {
+    return ensureRemoteProject().then(function(projectId) {
+      return collectProjectFiles().then(function(files) {
+        return apiRequest('/api/editor/projects/' + projectId + '/files', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: files,
+            client_updated_at: new Date().toISOString()
+          })
+        });
+      });
+    });
+  }
+
+  function buildFallbackThumbnail() {
+    var canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#2563eb';
+    ctx.fillRect(0, 0, canvas.width, 120);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 42px sans-serif';
+    ctx.fillText('el.js Editor Preview', 36, 76);
+    ctx.font = '30px sans-serif';
+    ctx.fillText(currentProject || 'Untitled Project', 36, 190);
+    ctx.font = '22px monospace';
+    ctx.fillStyle = '#93c5fd';
+    ctx.fillText(new Date().toISOString(), 36, 232);
+    var dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    return {
+      mime_type: 'image/jpeg',
+      data_base64: dataUrl.split(',')[1] || '',
+      width: canvas.width,
+      height: canvas.height
+    };
+  }
+
+  function getPreviewThumbnail() {
+    return new Promise(function(resolve) {
+      var iframeEl = connector.preview;
+      if (!iframeEl || !iframeEl.contentWindow) {
+        resolve(buildFallbackThumbnail());
+        return;
+      }
+
+      pendingThumbnailRequest = {
+        resolve: resolve,
+        timeoutId: setTimeout(function() {
+          pendingThumbnailRequest = null;
+          resolve(buildFallbackThumbnail());
+        }, 3000)
+      };
+
+      iframeEl.contentWindow.postMessage({
+        type: '__elcode_capture_thumbnail__',
+        maxWidth: 1280,
+        maxHeight: 720
+      }, '*');
+    });
+  }
+
+  function createNewProject() {
+    var name = prompt('New project name:', 'New Project');
+    if (!(name && name.trim())) return;
+    console.log('[New Project] Creating project:', name.trim());
+    currentProject = name.trim();
+    apiProjectId = null;
+    localStorage.setItem('elcode-lastProject', currentProject);
+    connector.projectName.textContent = currentProject;
+
+    // Clear state for new project
+    currentFile = null;
+    fileSessions = {};
+    isLoadingFile = true;
+    editor.setValue('', -1);
+    console.log('[New Project] Cleared editor state');
+
+    // Save main.js with default template
+    var defaultTemplate = "// ============================================\n"
+      + "// el.js Editor - Getting Started\n"
+      + "// ============================================\n"
+      + "// el.js is a lightweight DOM builder. Create elements with `el(tag)`,\n"
+      + "// chain methods to style/structure them, then call `.get()` to get\n"
+      + "// the real DOM node for appending.\n\n"
+      + "let app = document.getElementById('app');\n\n"
+      + "// --- Basic element with text ---\n"
+      + "let title = el('h1')\n"
+      + "  .text('Welcome to el.js!')\n"
+      + "  .class('text-2xl font-bold mb-4 text-gray-600');\n\n"
+      + "// --- HTML content (great for large lists) ---\n"
+      + "let subtitle = el('p')\n"
+      + "  .html('<span class=\\\"text-gray-400\\\">Build UI with simple method chaining</span>');\n\n"
+      + "// --- Nested children with .child() ---\n"
+      + "let card = el('div')\n"
+      + "  .class('bg-gray-800 p-4 rounded-lg mb-4')\n"
+      + "  .child([\n"
+      + "    el('h2').text('Features').class('text-lg font-semibold mb-2 text-white'),\n"
+      + "    el('ul').class('list-disc pl-5 space-y-1 text-gray-300').child([\n"
+      + "      el('li').text('.text()  - set text content'),\n"
+      + "      el('li').text('.html() - set innerHTML (fast for bulk)'),\n"
+      + "      el('li').text('.child() - nest other el() elements'),\n"
+      + "      el('li').text('.class() - add Tailwind / CSS classes'),\n"
+      + "      el('li').text('.css()  - inline styles'),\n"
+      + "      el('li').text('.click() - attach event handlers'),\n"
+      + "    ])\n"
+      + "  ]);\n\n"
+      + "// --- Event handling ---\n"
+      + "let btn = el('button')\n"
+      + "  .text('Click Me')\n"
+      + "  .class('px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white cursor-pointer')\n"
+      + "  .click(function() {\n"
+      + "    alert('Hello from el.js!');\n"
+      + "  });\n\n"
+      + "// --- Import another file ---\n"
+      + "// 1. Create a new file (e.g., card.js) in the file list.\n"
+      + "// 2. Export your element: export default el('div').text('My Card');\n"
+      + "// 3. Import it here: import myCard from './card.js';\n"
+      + "// 4. Append it: app.appendChild(myCard.get());\n\n"
+      + "// --- Render everything ---\n"
+      + "let container = el('div').padding('10px').child([title, subtitle, card]);\n"
+      + "app.appendChild(container.get());\n";
+
+    saveFile('main.js', defaultTemplate).then(function() {
+      console.log('[New Project] main.js saved to IndexedDB');
+      return saveProject();
+    }).then(function() {
+      console.log('[New Project] Project saved, opening main.js');
+      refreshFileList();
+      openFile('main.js');
+      setTimeout(function() {
+        console.log('[New Project] Running preview');
+        runPreview();
+      }, 300);
+      appendLog('info', ['New project "' + currentProject + '" created.']);
+    }).catch(function(err) {
+      console.error('[New Project] Failed to create project:', err);
+      isLoadingFile = false;
+      appendLog('error', ['Failed to create new project: ' + (err.message || err)]);
+    });
+  }
+
+  function publishProjectToApi() {
+    if (!authUser) {
+      appendLog('warn', ['Silakan login dulu sebelum publish.']);
+      showLoginDialog();
+      return;
+    }
+    var slugDefault = currentProject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    var slug = prompt('Slug publish:', slugDefault || 'my-project');
+    if (!slug || !slug.trim()) return;
+    slug = slug.trim();
+    setPublishLoadingState(true);
+
+    syncProjectToApi().then(function() {
+      return getPreviewThumbnail();
+    }).then(function(thumbnail) {
+      return apiRequest('/api/editor/projects/' + apiProjectId + '/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visibility: 'public', slug: slug, thumbnail: thumbnail })
+      });
+    }).then(function(resp) {
+      var url = resp.data && resp.data.published_url ? resp.data.published_url : '';
+      appendLog('info', ['Publish berhasil' + (url ? ': ' + url : '.')]);
+    }).catch(function(err) {
+      appendLog('error', ['Publish gagal: ' + (err.message || err)]);
+    }).finally(function() {
+      setPublishLoadingState(false);
     });
   }
 
@@ -2185,6 +2686,41 @@
         + '  var btn=document.createElement("button");btn.textContent="OK";btn.style.cssText="padding:6px 18px;background:#4a90d9;color:#fff;border:none;border-radius:4px;cursor:pointer;font:14px sans-serif;";\n'
         + '  btn.onclick=function(){o.remove();};btnWrap.appendChild(btn);b.appendChild(t);b.appendChild(btnWrap);o.appendChild(b);document.body.appendChild(o);setTimeout(function(){if(o.parentNode)o.remove();},5000);\n'
         + '};\n'
+        + 'async function __elcode_make_thumbnail__(maxWidth, maxHeight) {\n'
+        + '  maxWidth = maxWidth || 1280;\n'
+        + '  maxHeight = maxHeight || 720;\n'
+        + '  var sourceW = Math.max(document.documentElement.scrollWidth, window.innerWidth || 1);\n'
+        + '  var sourceH = Math.max(document.documentElement.scrollHeight, window.innerHeight || 1);\n'
+        + '  var scale = Math.min(maxWidth / sourceW, maxHeight / sourceH, 1);\n'
+        + '  var targetW = Math.max(1, Math.floor(sourceW * scale));\n'
+        + '  var targetH = Math.max(1, Math.floor(sourceH * scale));\n'
+        + '  var html = new XMLSerializer().serializeToString(document.documentElement);\n'
+        + '  var escaped = html.replace(/#/g, "%23").replace(/\\n/g, "%0A");\n'
+        + '  var svg = "<svg xmlns=\\"http://www.w3.org/2000/svg\\" width=\\"" + sourceW + "\\" height=\\"" + sourceH + "\\"><foreignObject width=\\"100%\\" height=\\"100%\\">" + escaped + "</foreignObject></svg>";\n'
+        + '  var img = new Image();\n'
+        + '  await new Promise(function(resolve, reject) {\n'
+        + '    img.onload = resolve;\n'
+        + '    img.onerror = reject;\n'
+        + '    img.src = "data:image/svg+xml;charset=utf-8," + svg;\n'
+        + '  });\n'
+        + '  var canvas = document.createElement("canvas");\n'
+        + '  canvas.width = targetW;\n'
+        + '  canvas.height = targetH;\n'
+        + '  var ctx = canvas.getContext("2d");\n'
+        + '  ctx.fillStyle = "#ffffff";\n'
+        + '  ctx.fillRect(0, 0, targetW, targetH);\n'
+        + '  ctx.drawImage(img, 0, 0, targetW, targetH);\n'
+        + '  var dataUrl = canvas.toDataURL("image/jpeg", 0.9);\n'
+        + '  return { mime_type: "image/jpeg", data_base64: dataUrl.split(",")[1] || "", width: targetW, height: targetH };\n'
+        + '}\n'
+        + 'window.addEventListener("message", function(evt) {\n'
+        + '  if (!evt || !evt.data || evt.data.type !== "__elcode_capture_thumbnail__") return;\n'
+        + '  __elcode_make_thumbnail__(evt.data.maxWidth, evt.data.maxHeight)\n'
+        + '    .then(function(thumbnail) { window.parent.postMessage({ type: "__elcode_thumbnail__", ok: true, thumbnail: thumbnail }, "*"); })\n'
+        + '    .catch(function(err) {\n'
+        + '      window.parent.postMessage({ type: "__elcode_thumbnail__", ok: false, error: String(err && err.message ? err.message : err) }, "*");\n'
+        + '    });\n'
+        + '});\n'
         + '</' + 'script>\n';
   
       // Resolve imports in main.js by inlining dependent code as data URLs
@@ -2247,6 +2783,17 @@
       connector.logs.innerHTML = '';
     } else if (e.data.type === '__elcode_error__') {
       if (previewTimeout) { clearTimeout(previewTimeout); previewTimeout = null; }
+    } else if (e.data.type === '__elcode_thumbnail__') {
+      if (pendingThumbnailRequest) {
+        clearTimeout(pendingThumbnailRequest.timeoutId);
+        var resolveThumbnail = pendingThumbnailRequest.resolve;
+        pendingThumbnailRequest = null;
+        if (e.data.ok && e.data.thumbnail && e.data.thumbnail.data_base64) {
+          resolveThumbnail(e.data.thumbnail);
+        } else {
+          resolveThumbnail(buildFallbackThumbnail());
+        }
+      }
     }
   });
 
@@ -2386,6 +2933,7 @@
 
 
   if(typeof el === 'undefined') throw new Error('el is not defined, need el.js to use code-editor')
+  document.addEventListener('click', closeHeaderDropdowns);
 
   Elcode.container = el('div').id('elcode-container').class('elcode-container')
   .css({
@@ -2420,156 +2968,58 @@
         })
       ]),
       el('div').css({ display: 'flex', alignItems: 'center', gap: '8px' }).child([
-        el('button').text('Documentation').css({
-          padding: '4px 12px', background: '#6b6b9f', color: '#fff', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
-        }).hover(
-          function() { this.style.background = '#7c7cb0'; },
-          function() { this.style.background = '#6b6b9f'; }
-        ).click(function() {
-          window.location.hash = '#/documentation';
+        el('span').link(connector, 'authStatus').text('Not logged in').css({
+          fontSize: '11px', color: '#a3a3a3', fontFamily: 'sans-serif'
         }),
-        el('button').text('New').css({
-          padding: '4px 12px', background: '#5a5', color: '#fff', border: 'none',
+        el('button').link(connector, 'publishBtn').text('Publish').css({
+          padding: '4px 12px', background: '#7c3aed', color: '#fff', border: 'none',
           borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
         }).hover(
-          function() { this.style.background = '#6b6'; },
-          function() { this.style.background = '#5a5'; }
+          function() { this.style.background = '#8b5cf6'; },
+          function() { this.style.background = '#7c3aed'; }
         ).click(function() {
-          var name = prompt('New project name:', 'New Project');
-          if (name && name.trim()) {
-            console.log('[New Project] Creating project:', name.trim());
-            currentProject = name.trim();
-            localStorage.setItem('elcode-lastProject', currentProject);
-            connector.projectName.textContent = currentProject;
-                    
-            // Clear state for new project
-            currentFile = null;
-            fileSessions = {};
-            isLoadingFile = true;
-            editor.setValue('', -1);
-            console.log('[New Project] Cleared editor state');
-                    
-            // Save main.js with default template
-            var defaultTemplate = "// ============================================\n"
-              + "// el.js Editor - Getting Started\n"
-              + "// ============================================\n"
-              + "// el.js is a lightweight DOM builder. Create elements with `el(tag)`,\n"
-              + "// chain methods to style/structure them, then call `.get()` to get\n"
-              + "// the real DOM node for appending.\n\n"
-              + "let app = document.getElementById('app');\n\n"
-              + "// --- Basic element with text ---\n"
-              + "let title = el('h1')\n"
-              + "  .text('Welcome to el.js!')\n"
-              + "  .class('text-2xl font-bold mb-4 text-gray-600');\n\n"
-              + "// --- HTML content (great for large lists) ---\n"
-              + "let subtitle = el('p')\n"
-              + "  .html('<span class=\\\"text-gray-400\\\">Build UI with simple method chaining</span>');\n\n"
-              + "// --- Nested children with .child() ---\n"
-              + "let card = el('div')\n"
-              + "  .class('bg-gray-800 p-4 rounded-lg mb-4')\n"
-              + "  .child([\n"
-              + "    el('h2').text('Features').class('text-lg font-semibold mb-2 text-white'),\n"
-              + "    el('ul').class('list-disc pl-5 space-y-1 text-gray-300').child([\n"
-              + "      el('li').text('.text()  - set text content'),\n"
-              + "      el('li').text('.html() - set innerHTML (fast for bulk)'),\n"
-              + "      el('li').text('.child() - nest other el() elements'),\n"
-              + "      el('li').text('.class() - add Tailwind / CSS classes'),\n"
-              + "      el('li').text('.css()  - inline styles'),\n"
-              + "      el('li').text('.click() - attach event handlers'),\n"
-              + "    ])\n"
-              + "  ]);\n\n"
-              + "// --- Event handling ---\n"
-              + "let btn = el('button')\n"
-              + "  .text('Click Me')\n"
-              + "  .class('px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white cursor-pointer')\n"
-              + "  .click(function() {\n"
-              + "    alert('Hello from el.js!');\n"
-              + "  });\n\n"
-              + "// --- Import another file ---\n"
-              + "// 1. Create a new file (e.g., card.js) in the file list.\n"
-              + "// 2. Export your element: export default el('div').text('My Card');\n"
-              + "// 3. Import it here: import myCard from './card.js';\n"
-              + "// 4. Append it: app.appendChild(myCard.get());\n\n"
-              + "// --- Render everything ---\n"
-              + "let container = el('div').padding('10px').child([title, subtitle, card]);\n"
-              + "app.appendChild(container.get());\n";
-                    
-            saveFile('main.js', defaultTemplate).then(function() {
-              console.log('[New Project] main.js saved to IndexedDB');
-              return saveProject();
-            }).then(function() {
-              console.log('[New Project] Project saved, opening main.js');
-              refreshFileList();
-              openFile('main.js');
-              setTimeout(function() { 
-                console.log('[New Project] Running preview');
-                runPreview(); 
-              }, 300);
-              appendLog('info', ['New project "' + currentProject + '" created.']);
-            }).catch(function(err) {
-              console.error('[New Project] Failed to create project:', err);
-              isLoadingFile = false;
-              appendLog('error', ['Failed to create new project: ' + (err.message || err)]);
+          publishProjectToApi();
+        }),
+        createHeaderDropdown('Project', '#5a5', [
+          { label: 'New Project', onClick: createNewProject },
+          { label: 'Save Project', onClick: function() {
+            saveProject().then(function() {
+              appendLog('info', ['Project "' + currentProject + '" saved.']);
             });
-          }
-        }),
-        el('button').text('Save').css({
-          padding: '4px 12px', background: '#4a90d9', color: '#fff', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
-        }).hover(
-          function() { this.style.background = '#5aa0e9'; },
-          function() { this.style.background = '#4a90d9'; }
-        ).click(function() {
-          saveProject().then(function() {
-            appendLog('info', ['Project "' + currentProject + '" saved.']);
-          });
-        }),
-        el('button').text('Load').css({
-          padding: '4px 12px', background: '#555', color: '#eee', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
-        }).hover(
-          function() { this.style.background = '#666'; },
-          function() { this.style.background = '#555'; }
-        ).click(function() {
-          showProjectLoadDialog();
-        }),
-        el('button').text('Export').css({
-          padding: '4px 12px', background: '#8a6d3b', color: '#fff', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
-        }).hover(
-          function() { this.style.background = '#a07d4b'; },
-          function() { this.style.background = '#8a6d3b'; }
-        ).click(function() {
-          exportProject();
-        }),
-        el('button').text('Snippets').css({
-          padding: '4px 12px', background: '#5b4a7a', color: '#fff', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '12px', fontFamily: 'sans-serif'
-        }).hover(
-          function() { this.style.background = '#6b5a8a'; },
-          function() { this.style.background = '#5b4a7a'; }
-        ).click(function() {
-          showSnippetDialog();
-        }),
-        el('button').text('⚙').css({
-          padding: '4px 10px', background: '#555', color: '#eee', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '16px', lineHeight: '1'
-        }).hover(
-          function() { this.style.background = '#666'; },
-          function() { this.style.background = '#555'; }
-        ).click(function() {
-          showSettingsDialog();
-        }),
-        el('button').text('💬').css({
-          padding: '4px 10px', background: '#6b6b9f', color: '#fff', border: 'none',
-          borderRadius: '3px', cursor: 'pointer', fontSize: '16px', lineHeight: '1'
-        }).hover(
-          function() { this.style.background = '#7c7cb0'; },
-          function() { this.style.background = '#6b6b9f'; }
-        ).click(function() {
-          showChatDialog();
-        })
+          }},
+          { label: 'Load Project', onClick: function() { showProjectLoadDialog(); } },
+          { label: 'Export ZIP', onClick: function() { exportProject(); } },
+        ]),
+        createHeaderDropdown('Browse', '#6b6b9f', [
+          { label: 'Documentation', onClick: function() { window.location.hash = '#/documentation'; } },
+          { label: 'Store', onClick: function() { window.location.hash = '#/store'; } },
+          { label: 'Snippets', onClick: function() { showSnippetDialog(); } },
+        ]),
+        createHeaderDropdown('Tools', '#555', [
+          { label: 'Settings', onClick: function() { showSettingsDialog(); } },
+          { label: 'AI Chat', onClick: function() { showChatDialog(); } },
+        ]),
+        createHeaderDropdown('Account', '#0ea5e9', [
+          { label: 'Login', linkName: 'authActionBtn', onClick: function() {
+            if (authUser) {
+              appendLog('info', ['Session aktif: ' + (authUser.email || authUser.name || 'user')]);
+              return;
+            }
+            showLoginDialog();
+          }},
+          { label: 'Register', linkName: 'authRegisterBtn', onClick: function() { showRegisterDialog(); } },
+          { label: 'Logout', linkName: 'authLogoutBtn', color: '#fca5a5', onClick: function() {
+            apiRequest('/api/editor/auth/logout', { method: 'POST' })
+              .then(function() {
+                authUser = null;
+                updateAuthUi();
+                appendLog('info', ['Logout berhasil.']);
+              })
+              .catch(function(err) {
+                appendLog('error', ['Logout gagal: ' + (err.message || err)]);
+              });
+          }},
+        ]),
       ])
     ]),
     el('div').class('elcode-content').css({
@@ -2860,6 +3310,7 @@
       });
       registerCustomSnippets();
     }
+    await refreshAuthState();
 
     // Pre-fetch el.js and cache for sandboxed iframe
     var elJsResponse = await fetch(window.location.origin + '/el.js');

@@ -15,27 +15,38 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="el.js">
     <link rel="apple-touch-icon" href="./icon.ico">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css"
         integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
+        html {
+          font-size: 16px;
+          line-height: 1.5;
+        }
         .highlight { background-color: #fbbf24 !important; }
         #output { white-space: pre-wrap; }
+        body, button, input, select, textarea {
+          font-family: 'Roboto', sans-serif;
+          font-size: 1rem;
+          line-height: 1.5;
+        }
     </style>
 </head>
 
-<body class="bg-gray-50 min-h-screen"> 
+<body style="padding: 0px; margin: 0px; background:#f8fafc;min-height:100dvh;"> 
     <div id="app"></div>
-    <script src="./el.js?v=1.0.6"></script>
-    <script src="./code-editor/zip.js?v=1.0.6"></script>
-    <script src="./layouting/layout.js?v=1.0.6"></script>
+    <script src="./el.js?v=1.0.9"></script>
+    <script src="./code-editor/zip.js?v=1.0.9"></script>
+    <script src="./layouting/layout.js?v=1.0.9"></script>
     
     <!-- Register Service Worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./service-worker.js?v=1.0.6')
+          navigator.serviceWorker.register('./service-worker.js?v=1.0.9')
             .then((registration) => {
               console.log('ServiceWorker registration successful');
               
@@ -70,16 +81,147 @@
     </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
-        await import('./code-editor/code.js?v=1.0.6')
-        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.6')
-
-        console.log(codeEditorEl)
+        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.9')
+        const { createStorePage } = await import('./store.js?v=1.0.9')
+        let editorLoaded = false;
 
         layout.addPage({
           path: '/',
-          pageContentPadding: '0px',
+          pageContentPadding: '0px 0px 40px 0px',
           hideLayout: true,
           component: () => {
+            return el('div').css({
+              background: '#f8fafc',
+              color: '#0f172a',
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 'clamp(14px, 2vw, 24px) clamp(14px, 2vw, 24px) clamp(56px, 8vh, 96px) clamp(14px, 2vw, 24px)',
+              fontFamily: 'Roboto, sans-serif',
+              boxSizing: 'border-box'
+            }).child([
+              el('div').css({
+                width: 'min(1100px, 100%)',
+                margin: '0 auto',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '0.75rem 0.35rem'
+              }).child([
+                el('div').text('slice-code.com').css({
+                  fontSize: '0.88rem',
+                  color: '#334155',
+                  letterSpacing: '0.04em',
+                  fontWeight: '700'
+                }),
+                el('div').css({ display: 'flex', gap: '0.45rem' }).child([
+                  el('button').text('Editor').css({
+                    background: '#0f172a',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '0.55rem',
+                    padding: '0.45rem 0.85rem',
+                    cursor: 'pointer',
+                    fontSize: '0.84rem'
+                  }).click(() => layout.navigate('/editor')),
+                  el('button').text('Store').css({
+                    background: '#e2e8f0',
+                    color: '#0f172a',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '0.55rem',
+                    padding: '0.45rem 0.85rem',
+                    cursor: 'pointer',
+                    fontSize: '0.84rem'
+                  }).click(() => layout.navigate('/store'))
+                ])
+              ]),
+              el('div').css({
+                width: 'min(1100px, 100%)',
+                margin: '2.25rem auto 0 auto',
+                background: '#ffffff',
+                border: '1px solid #e2e8f0',
+                borderRadius: '1.25rem',
+                padding: '2.5rem 2.5rem 3.25rem 2.5rem',
+                boxShadow: '0 20px 50px rgba(15, 23, 42, 0.08)'
+              }).child([
+                el('div').text('EL.JS PLATFORM').css({
+                  fontSize: '0.78rem',
+                  color: '#64748b',
+                  letterSpacing: '0.08em',
+                  marginBottom: '0.9rem',
+                  fontWeight: '700'
+                }),
+                el('h1').text('Build and publish frontend experiments with a clean workflow.').css({
+                  fontSize: 'clamp(1.8rem, 4vw, 3rem)',
+                  lineHeight: '1.15',
+                  color: '#0f172a',
+                  margin: '0 0 0.95rem 0',
+                  fontWeight: '800',
+                  maxWidth: '800px'
+                }),
+                el('p').text('Start coding in the editor, publish in one flow, and discover community projects in Store. Minimal, fast, and focused.').css({
+                  color: '#475569',
+                  fontSize: '1rem',
+                  lineHeight: '1.75',
+                  maxWidth: '760px',
+                  marginBottom: '1.4rem'
+                }),
+                el('div').css({ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.6rem' }).child([
+                  el('button').text('Open Editor').css({
+                    background: '#2563eb',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '0.65rem',
+                    padding: '0.72rem 1.15rem',
+                    cursor: 'pointer',
+                    fontWeight: '700'
+                  }).click(() => layout.navigate('/editor')),
+                  el('button').text('Explore Store').css({
+                    background: '#fff',
+                    color: '#0f172a',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '0.65rem',
+                    padding: '0.72rem 1.15rem',
+                    cursor: 'pointer',
+                    fontWeight: '700'
+                  }).click(() => layout.navigate('/store')),
+                ]),
+                el('div').css({
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '0.75rem'
+                }).child([
+                  el('div').css({ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.8rem', padding: '0.9rem' }).child([
+                    el('div').text('Fast Editor').css({ fontWeight: '700', marginBottom: '0.3rem', color: '#0f172a' }),
+                    el('div').text('Write and preview instantly with el.js components.').css({ color: '#64748b', fontSize: '0.9rem' })
+                  ]),
+                  el('div').css({ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.8rem', padding: '0.9rem' }).child([
+                    el('div').text('One-click Publish').css({ fontWeight: '700', marginBottom: '0.3rem', color: '#0f172a' }),
+                    el('div').text('Publish projects with auth, thumbnail, and slug route.').css({ color: '#64748b', fontSize: '0.9rem' })
+                  ]),
+                  el('div').css({ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.8rem', padding: '0.9rem' }).child([
+                    el('div').text('Community Store').css({ fontWeight: '700', marginBottom: '0.3rem', color: '#0f172a' }),
+                    el('div').text('Search and inspect published projects from creators.').css({ color: '#64748b', fontSize: '0.9rem' })
+                  ])
+                ]),
+                el('div').text('Login/register tersedia di Editor sebelum publish project.').css({
+                  color: '#94a3b8',
+                  fontSize: '0.86rem',
+                  marginTop: '1rem'
+                })
+              ])
+            ]);
+          },
+        })
+
+        layout.addPage({
+          path: '/editor',
+          pageContentPadding: '0px',
+          hideLayout: true,
+          component: async () => {
+            if (!editorLoaded) {
+              await import('./code-editor/code.js?v=1.0.9')
+              editorLoaded = true
+            }
             return el('div').child([ codeEditorEl.container ]);
           },
         })
@@ -92,14 +234,26 @@
           },
         })
 
+        layout.addPage({
+          path: '/store',
+          hideLayout: true,
+          component: () => {
+            return createStorePage();
+          },
+        })
+
         addNavbar([
           { name: 'Home', page: '/' },
+          { name: 'Editor', page: '/editor' },
           { name: 'Documentation', page: '/documentation' },
+          { name: 'Store', page: '/store' },
         ])
 
         layout.addSideMenu([
           { name: 'Home', page: '/', icon: 'fas fa-home' },
+          { name: 'Editor', page: '/editor', icon: 'fas fa-code' },
           { name: 'Documentation', page: '/documentation', icon: 'fas fa-book' },
+          { name: 'Store', page: '/store', icon: 'fas fa-store' },
         ])
 
         // Set theme (default, blue, dark, light, purple, green, red, orange, teal, pink, gray)
