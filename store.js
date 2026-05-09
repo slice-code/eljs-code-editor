@@ -204,13 +204,7 @@ export function createStorePage() {
         loadStoreList(keyword);
       })
     ]),
-    el('div').link(refs, 'storeList').css({
-      columnWidth: 'min(100%, 300px)',
-      columnCount: 'auto',
-      columnGap: '1.05rem',
-      columnFill: 'balance',
-      width: '100%'
-    })
+    el('div').link(refs, 'storeList').class('store-list-masonry')
   ]);
   setTimeout(function() { loadStoreList(''); }, 20);
   return page;
