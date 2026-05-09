@@ -997,7 +997,7 @@
     }).get();
     slugInput.value = slugDefault || 'my-project';
 
-    var descInput = el('textarea').attr('placeholder', 'Deskripsi singkat untuk halaman Store (opsional)').css({
+    var descInput = el('textarea').attr('placeholder', 'Short description for the Store (optional)').css({
       width: '100%', minHeight: '88px', resize: 'vertical', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
       fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box',
       fontFamily: 'sans-serif'
@@ -1015,14 +1015,14 @@
     }).child([
       el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '10px' }).text('Publish project'),
       el('div').css({ fontSize: '11px', color: '#94a3b8', marginBottom: '8px', lineHeight: '1.45' }).text(
-        'Slug untuk URL publik. Deskripsi disimpan di metadata project dan tampil di Store (bukan di body request publish).'
+        'Public URL slug. Description is saved on project metadata and shown in the Store (not in the publish request body).'
       ),
       el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Slug'),
       el('div').css({ marginBottom: '10px' }).child([el(slugInput)]),
-      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Deskripsi'),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Description'),
       el('div').css({ marginBottom: '14px' }).child([el(descInput)]),
       el('div').css({ display: 'flex', justifyContent: 'flex-end', gap: '8px' }).child([
-        el('button').text('Batal').css({
+        el('button').text('Cancel').css({
           padding: '6px 12px', background: '#555', color: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
         }).click(function() { closeDialog(); }),
         el('button').text('Publish').css({

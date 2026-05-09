@@ -67,7 +67,7 @@ export function createStorePage() {
       el(refs.storeList).empty().child(
         items.map(function(item) {
           const title = getSafeText(item.name, 'Untitled Project');
-          const description = getSafeText(item.description, 'Tidak ada deskripsi');
+          const description = getSafeText(item.description, 'No description');
           const authorName = getSafeText(item.author && item.author.name, 'Unknown');
           const views = (item.stats && item.stats.views) || 0;
           const likes = (item.stats && item.stats.likes) || 0;
@@ -108,7 +108,7 @@ export function createStorePage() {
                 textOverflow: 'ellipsis'
               }),
               el('div').css({ marginBottom: '0.25rem' }).child([
-                el('div').text('Deskripsi').css({
+                el('div').text('Description').css({
                   fontSize: '0.68rem',
                   fontWeight: '700',
                   color: '#94a3b8',
@@ -189,7 +189,7 @@ export function createStorePage() {
       padding: '1rem'
     }).child([
       el('div').text('Store').css({ fontSize: '1.25rem', fontWeight: '800', color: '#0f172a', marginBottom: '0.28rem' }),
-      el('div').text('Temukan project publish dari creator — tiap kartu memuat deskripsi, thumbnail, dan statistik; cari cepat lalu buka detail.').css({ color: '#334155', fontSize: '0.92rem' })
+      el('div').text('Discover published projects from creators — each card shows description, thumbnail, and stats; search quickly then open the detail page.').css({ color: '#334155', fontSize: '0.92rem' })
     ]),
     el('div').css({ marginBottom: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }).child([
       el('input').link(refs, 'searchInput').attr('type', 'text').attr('placeholder', 'Cari project publish...').css({

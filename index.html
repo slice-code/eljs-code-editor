@@ -98,8 +98,8 @@
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
         const { createDocumentationPage } = await import('./documentation-page.js?v=1.2.3')
-        const { createStorePage } = await import('./store.js?v=1.2.3')
-        const { createStoreDetailPage } = await import('./store-detail.js?v=1.2.3')
+        const { createStorePage } = await import('./store.js?v=1.2.4')
+        const { createStoreDetailPage } = await import('./store-detail.js?v=1.2.4')
         const { createMyPublishPage } = await import('./my-publish.js?v=1.2.3')
         let editorLoaded = false;
 
@@ -237,7 +237,7 @@
           hideLayout: true,
           component: async () => {
             if (!editorLoaded) {
-              await import('./code-editor/code.js?v=1.2.6')              
+              await import('./code-editor/code.js?v=1.2.7')              
               editorLoaded = true
             }
             return el('div').child([ codeEditorEl.container ]);
