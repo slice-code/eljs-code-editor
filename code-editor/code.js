@@ -1490,7 +1490,7 @@
       if (nameEl) nameEl.value = '';
       if (triggerEl) triggerEl.value = '';
       if (contentEl) contentEl.value = '';
-      if (actionEl) actionEl.textContent = 'Add Snippet';
+      if (actionEl) actionEl.textContent = 'Tambah snippet';
     }
     function renderCustomSnippetList() {
       if (!overlayNode) return;
@@ -1500,16 +1500,17 @@
 
       if (!customSnippets.length) {
         listEl.appendChild(
-          el('div').css({ color: '#777', fontSize: '11px', padding: '6px 0' }).text('No custom snippets yet.').get()
+          el('div').css({ color: '#777', fontSize: '12px', padding: '12px 6px', lineHeight: '1.5' }).text('Belum ada snippet. Tambahkan di kolom kanan.').get()
         );
         return;
       }
 
       customSnippets.forEach(function(item) {
+        var isEditing = editingTrigger === item.tabTrigger;
         var row = el('div').css({
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          gap: '8px', padding: '6px 8px', background: '#1f1f1f', borderRadius: '4px',
-          border: '1px solid #3a3a3a', marginBottom: '6px'
+          gap: '8px', padding: '8px 10px', background: isEditing ? '#243548' : '#1f1f1f', borderRadius: '4px',
+          border: '1px solid ' + (isEditing ? '#4a6fa0' : '#3a3a3a'), marginBottom: '8px'
         }).child([
           el('div').css({ minWidth: '0', flex: '1' }).child([
             el('div').css({ color: '#ddd', fontSize: '12px', fontWeight: 'bold' }).text(item.name),
@@ -1530,7 +1531,7 @@
             if (nameEl) nameEl.value = item.name || '';
             if (triggerEl) triggerEl.value = item.tabTrigger || '';
             if (contentEl) contentEl.value = item.content || '';
-            if (actionEl) actionEl.textContent = 'Save Changes';
+            if (actionEl) actionEl.textContent = 'Simpan perubahan';
           }),
           el('button').text('Delete').css({
             padding: '4px 8px', background: '#7a3a3a', color: '#fff', border: 'none',
@@ -1560,97 +1561,192 @@
     var overlay = el('div').css({
       position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
       background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      zIndex: '99999', fontFamily: 'sans-serif'
+      zIndex: '99999', fontFamily: 'sans-serif', padding: '16px', boxSizing: 'border-box'
     });
-    var box = el('div').css({
-      background: '#2d2d2d', borderRadius: '8px', padding: '20px', minWidth: '420px',
-      maxWidth: '560px', boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+    // Modal lebar untuk desktop; kolom kiri = daftar, kanan = form
+    var snippetSaveClick = function() {
+      var name = (document.getElementById('elcode-snippet-name').value || '').trim();
+      var trigger = (document.getElementById('elcode-snippet-trigger').value || '').trim();
+      var content = document.getElementById('elcode-snippet-content').value || '';
+
+      if (!name || !trigger || !content.trim()) {
+        appendLog('error', ['Snippet fields cannot be empty.']);
+        return;
+      }
+
+      var triggerExistsBuiltIn = builtInSnippets.some(function(s) { return s.tabTrigger === trigger; });
+      var triggerExistsCustom = customSnippets.some(function(s) {
+        if (editingTrigger && s.tabTrigger === editingTrigger) return false;
+        return s.tabTrigger === trigger;
+      });
+      if (triggerExistsBuiltIn || triggerExistsCustom) {
+        appendLog('error', ['Snippet trigger "' + trigger + '" already exists.']);
+        return;
+      }
+
+      if (editingTrigger) {
+        customSnippets = customSnippets.map(function(s) {
+          if (s.tabTrigger === editingTrigger) {
+            return { name: name, tabTrigger: trigger, content: content };
+          }
+          return s;
+        });
+      } else {
+        customSnippets.push({ name: name, tabTrigger: trigger, content: content });
+      }
+      unregisterCustomSnippets();
+      registerCustomSnippets();
+      saveSetting('customSnippets', customSnippets).then(function() {
+        appendLog('info', ['Snippet "' + trigger + '" saved.']);
+        renderCustomSnippetList();
+        resetSnippetForm();
+      }).catch(function(err) {
+        appendLog('error', ['Failed to save snippet: ' + (err && err.message ? err.message : err)]);
+      });
+    };
+
+    var leftCol = el('div').css({
+      flex: '1 1 300px',
+      minWidth: '0',
+      display: 'flex',
+      flexDirection: 'column',
+      minHeight: '0'
     }).child([
-      el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '14px' }).text('Add Snippet'),
-      el('div').css({ marginBottom: '12px' }).child([
-        el('label').text('Snippet Name').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
+      el('div').css({ color: '#bbb', fontSize: '12px', marginBottom: '8px', fontWeight: '600' }).text('Daftar snippet'),
+      el('div').id('elcode-custom-snippet-list').css({
+        flex: '1',
+        minHeight: '200px',
+        maxHeight: 'min(48vh, 400px)',
+        overflowY: 'auto',
+        padding: '10px',
+        background: '#151515',
+        border: '1px solid #333',
+        borderRadius: '6px'
+      })
+    ]);
+
+    // Area form bisa di-scroll; tombol Batal/Simpan di footer tidak ikut terpotong (flexShrink: 0)
+    var rightBody = el('div').css({
+      flex: '1',
+      minHeight: '0',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '12px',
+      paddingRight: '4px'
+    }).child([
+      el('div').css({ color: '#bbb', fontSize: '12px', fontWeight: '600' }).text('Form snippet'),
+      el('div').css({ marginBottom: '0' }).child([
+        el('label').text('Nama').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
         el('input').id('elcode-snippet-name').attr('type', 'text').attr('placeholder', 'mySnippet').css({
           width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
           fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
         })
       ]),
-      el('div').css({ marginBottom: '12px' }).child([
+      el('div').css({ marginBottom: '0' }).child([
         el('label').text('Trigger').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
         el('input').id('elcode-snippet-trigger').attr('type', 'text').attr('placeholder', 'mytrg').css({
           width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
           fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
         })
       ]),
-      el('div').css({ marginBottom: '14px' }).child([
-        el('label').text('Snippet Content').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
-        el('textarea').id('elcode-snippet-content').attr('rows', '8').attr('placeholder', "el('div').text('${1:Hello}')").css({
-          width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
-          fontSize: '12px', padding: '8px 10px', borderRadius: '4px', outline: 'none',
+      el('div').css({ display: 'flex', flexDirection: 'column', minHeight: '160px' }).child([
+        el('label').text('Isi snippet').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
+        el('textarea').id('elcode-snippet-content').attr('rows', '12').attr('placeholder', "el('div').text('${1:Hello}')").css({
+          width: '100%', minHeight: '180px', maxHeight: 'min(45vh, 360px)', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+          fontSize: '12px', padding: '10px 12px', borderRadius: '4px', outline: 'none',
           boxSizing: 'border-box', fontFamily: "'Fira Code', 'Consolas', monospace", resize: 'vertical'
         })
-      ]),
-      el('div').css({ marginBottom: '14px' }).child([
-        el('label').text('Custom Snippet List').css({ display: 'block', color: '#aaa', fontSize: '12px', marginBottom: '6px' }),
-        el('div').id('elcode-custom-snippet-list').css({
-          maxHeight: '140px', overflowY: 'auto', padding: '4px',
-          background: '#151515', border: '1px solid #333', borderRadius: '4px'
-        })
-      ]),
-      el('div').css({ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }).child([
-        el('div').css({ fontSize: '11px', color: '#777' }).text('Supports ACE placeholders, e.g. ${1:name}.'),
-        el('div').css({ display: 'flex', gap: '8px' }).child([
-          el('button').text('Cancel').css({
-            padding: '6px 12px', background: '#555', color: '#eee', border: 'none',
-            borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
-          }).click(function() { closeDialog(); }),
-          el('button').id('elcode-snippet-save-btn').text('Add Snippet').css({
-            padding: '6px 12px', background: '#4a90d9', color: '#fff', border: 'none',
-            borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
-          }).hover(
-            function() { this.style.background = '#5aa0e9'; },
-            function() { this.style.background = '#4a90d9'; }
-          ).click(function() {
-            var name = (document.getElementById('elcode-snippet-name').value || '').trim();
-            var trigger = (document.getElementById('elcode-snippet-trigger').value || '').trim();
-            var content = document.getElementById('elcode-snippet-content').value || '';
-
-            if (!name || !trigger || !content.trim()) {
-              appendLog('error', ['Snippet fields cannot be empty.']);
-              return;
-            }
-
-            var triggerExistsBuiltIn = builtInSnippets.some(function(s) { return s.tabTrigger === trigger; });
-            var triggerExistsCustom = customSnippets.some(function(s) {
-              if (editingTrigger && s.tabTrigger === editingTrigger) return false;
-              return s.tabTrigger === trigger;
-            });
-            if (triggerExistsBuiltIn || triggerExistsCustom) {
-              appendLog('error', ['Snippet trigger "' + trigger + '" already exists.']);
-              return;
-            }
-
-            if (editingTrigger) {
-              customSnippets = customSnippets.map(function(s) {
-                if (s.tabTrigger === editingTrigger) {
-                  return { name: name, tabTrigger: trigger, content: content };
-                }
-                return s;
-              });
-            } else {
-              customSnippets.push({ name: name, tabTrigger: trigger, content: content });
-            }
-            unregisterCustomSnippets();
-            registerCustomSnippets();
-            saveSetting('customSnippets', customSnippets).then(function() {
-              appendLog('info', ['Snippet "' + trigger + '" saved.']);
-              renderCustomSnippetList();
-              resetSnippetForm();
-            }).catch(function(err) {
-              appendLog('error', ['Failed to save snippet: ' + (err && err.message ? err.message : err)]);
-            });
-          })
-        ])
       ])
+    ]);
+
+    var rightFooter = el('div').css({
+      flexShrink: '0',
+      flexGrow: '0',
+      display: 'flex',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: '10px',
+      paddingTop: '14px',
+      marginTop: '4px',
+      borderTop: '1px solid #404040',
+      background: '#2d2d2d'
+    }).child([
+      el('div').css({ fontSize: '11px', color: '#777', flex: '1 1 180px', minWidth: '0' }).text('Placeholder ACE, contoh ${1:name}.'),
+      el('div').css({ display: 'flex', gap: '8px', flexShrink: '0', flexWrap: 'wrap', justifyContent: 'flex-end' }).child([
+        el('button').text('Batal').css({
+          padding: '8px 14px', background: '#555', color: '#eee', border: 'none',
+          borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() { closeDialog(); }),
+        el('button').id('elcode-snippet-save-btn').text('Tambah snippet').css({
+          padding: '8px 14px', background: '#4a90d9', color: '#fff', border: 'none',
+          borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).hover(
+          function() { this.style.background = '#5aa0e9'; },
+          function() { this.style.background = '#4a90d9'; }
+        ).click(snippetSaveClick)
+      ])
+    ]);
+
+    var rightCol = el('div').css({
+      flex: '1.35 1 380px',
+      minWidth: '0',
+      display: 'flex',
+      flexDirection: 'column',
+      minHeight: '0',
+      maxHeight: '100%'
+    }).child([rightBody, rightFooter]);
+
+    var mainRow = el('div').css({
+      display: 'flex',
+      flex: '1',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: '24px',
+      alignItems: 'stretch',
+      minHeight: '0',
+      overflow: 'visible'
+    }).child([leftCol, rightCol]);
+
+    var box = el('div').css({
+      background: '#2d2d2d',
+      borderRadius: '10px',
+      padding: '24px',
+      width: 'min(960px, calc(100vw - 32px))',
+      maxWidth: '960px',
+      minHeight: 'min(480px, 85vh)',
+      maxHeight: 'min(92vh, 880px)',
+      boxShadow: '0 8px 40px rgba(0,0,0,0.55)',
+      display: 'flex',
+      flexDirection: 'column',
+      boxSizing: 'border-box',
+      overflow: 'hidden'
+    }).child([
+      el('div').css({
+        fontSize: '18px', fontWeight: 'bold', color: '#eee', marginBottom: '18px', flexShrink: '0',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px'
+      }).child([
+        el('span').text('Snippets'),
+        el('button').attr('type', 'button').attr('aria-label', 'Tutup').text('\u00d7').css({
+          flexShrink: '0',
+          width: '36px',
+          height: '36px',
+          padding: '0',
+          lineHeight: '36px',
+          background: '#444',
+          color: '#eee',
+          border: 'none',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontSize: '22px'
+        }).hover(
+          function() { this.style.background = '#555'; },
+          function() { this.style.background = '#444'; }
+        ).click(function() { closeDialog(); })
+      ]),
+      mainRow
     ]);
 
     overlay.child([box]);
