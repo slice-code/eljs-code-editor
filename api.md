@@ -2,6 +2,13 @@
 
 Dokumen ini mendefinisikan kebutuhan API untuk fitur **Publish** dari `editor.slice-code.com` ke backend `slice-code.com` (PHP).
 
+## Pembaruan implementasi (sinkron backend)
+
+- **Access token (cookie `editor_access_token`)**: masa berlaku **24 jam** (`Max-Age=86400`). Refresh token tetap long-lived (mis. ~30 hari).
+- **Publish ulang / update publish** (`POST .../publish`): boleh dipanggil lagi untuk project yang sama. Jika **slug tidak berubah**, server **mempertahankan `published_at`** (tanggal publish pertama). Jika **slug berubah** atau pertama kali publish, **`published_at` di-set ulang** ke waktu sekarang. Slug yang bentrok dengan project **lain** tetap `409`.
+- **Unpublish**: selain `published_url` dan `published_at`, field **`published_slug`** di basis data juga dikosongkan agar state konsisten.
+- **Store (`GET /api/editor/store`, `GET /api/editor/store/{slug}`)**: objek **`author`** selalu mengacu pada **pemilik project** (`editor_projects.user_id`), dengan `name` dari baris `users` yang id-nya sama. Query memakai kolom eksplisit (bukan `p.*`) agar nama project dan nama user tidak tertukar di hasil PDO.
+
 ## Tujuan
 
 - Menyimpan project editor ke server (bukan hanya IndexedDB lokal).
@@ -52,7 +59,7 @@ Login user dan set cookie token.
 ```
 
 **Set-Cookie (contoh)**
-- `editor_access_token=<jwt>; HttpOnly; Secure; SameSite=None; Path=/; Domain=.slice-code.com; Max-Age=900`
+- `editor_access_token=<jwt>; HttpOnly; Secure; SameSite=None; Path=/; Domain=.slice-code.com; Max-Age=86400` (24 jam)
 - `editor_refresh_token=<jwt>; HttpOnly; Secure; SameSite=None; Path=/api/editor/auth; Domain=.slice-code.com; Max-Age=2592000`
 
 #### `POST /api/editor/auth/refresh`
@@ -263,7 +270,11 @@ Simpan semua file project sekaligus (sinkron dari editor).
 ---
 
 ### 1.7 `POST /api/editor/projects/{project_id}/publish`
-Publish project ke URL publik.
+Publish project ke URL publik. Endpoint ini juga dipakai untuk **memperbarui** publish (thumbnail, slug, dll.) pada project yang sudah pernah publish.
+
+**Perilaku `published_at`**
+- **Pertama kali publish**, atau **ganti `slug`**: `published_at` = waktu server saat request.
+- **Sudah publish dan `slug` sama dengan sebelumnya**: metadata/thumbnail diperbarui; **`published_at` tidak di-reset** (tetap waktu publish pertama).
 
 > Saat publish, UI mengirim screenshot dari preview iframe sebagai thumbnail.
 
@@ -303,7 +314,7 @@ Keterangan `thumbnail`:
 ---
 
 ### 1.8 `POST /api/editor/projects/{project_id}/unpublish`
-Menonaktifkan akses publik project.
+Menonaktifkan akses publik project. Di sisi server, **`is_published`**, **`published_slug`**, **`published_url`**, dan **`published_at`** direset (slug/url/timestamp tidak lagi aktif untuk store).
 
 **Response 200**
 ```json
@@ -321,6 +332,9 @@ Menonaktifkan akses publik project.
 
 ### 1.9 `GET /api/editor/store`
 Ambil daftar project yang sudah publish untuk halaman Store (public).
+
+**Author di response**  
+Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user_id`). `author.name` = nama dari tabel `users` untuk id tersebut. Jika pemilik project bukan akun yang sama dengan yang membuat konten di UI, periksa `user_id` saat project dibuat.
 
 **Query opsional**
 - `search`: keyword nama project / author
@@ -485,7 +499,7 @@ Saat error:
   - `https://editor.slice-code.com`
   - `https://slice-code.com`
 - Wajib pakai JWT di cookie `HttpOnly` + `Secure` + `SameSite=None` (karena beda subdomain).
-- Access token short-lived (contoh 15 menit), refresh token long-lived (contoh 30 hari).
+- Access token: di lingkungan ini **24 jam** (`86400` detik); refresh token long-lived (contoh 30 hari). (Versi awal dokumen menyebut 15 menit; disesuaikan agar sesi editor tidak terlalu sering putus.)
 - Cookie domain direkomendasikan `.slice-code.com` agar bisa dipakai `slice-code.com` dan `editor.slice-code.com`.
 - JWT tidak boleh diekspos ke JavaScript frontend.
 - CSRF protection wajib karena auth berbasis cookie (double submit token atau CSRF header).

@@ -776,26 +776,40 @@
     });
   }
 
-  function getStoreSlugFromNavigationState() {
-    var slugFromSession = '';
+  /** Baca slug impor dari session / query lalu hapus session agar tidak ter-import ulang. */
+  function consumeEditorStoreImportIntent() {
+    var slug = '';
+    var fromMyPublish = false;
     try {
-      slugFromSession = String(sessionStorage.getItem('editor:storeSlug') || '').trim();
-      if (slugFromSession) {
+      slug = String(sessionStorage.getItem('editor:storeSlug') || '').trim();
+      if (slug) {
+        fromMyPublish = String(sessionStorage.getItem('editor:storeImportSource') || '').trim() === 'my-publish';
         sessionStorage.removeItem('editor:storeSlug');
-        return slugFromSession;
+        sessionStorage.removeItem('editor:storeImportSource');
+        return { slug: slug, fromMyPublish: fromMyPublish };
       }
     } catch (e) {}
 
     try {
       var params = new URLSearchParams(window.location.search || '');
-      return String(params.get('storeSlug') || '').trim();
-    } catch (e) {
-      return '';
-    }
+      var qSlug = String(params.get('storeSlug') || '').trim();
+      if (qSlug) {
+        return { slug: qSlug, fromMyPublish: false };
+      }
+    } catch (e2) {}
+
+    return { slug: '', fromMyPublish: false };
   }
 
-  function importStoreProjectFromSlug(slug) {
+  /**
+   * Impor project dari Store API ke IndexedDB.
+   * @param {string} slug
+   * @param {{ fromMyPublish?: boolean }} options — dari halaman My Published: nama project = nama API; timpa project lokal bernama sama.
+   */
+  function importStoreProjectFromSlug(slug, options) {
     if (!slug) return Promise.resolve(false);
+    options = options || {};
+    var fromMyPublish = !!options.fromMyPublish;
 
     appendLog('info', ['Mengambil project dari Store: ' + slug + ' ...']);
 
@@ -806,22 +820,17 @@
         throw new Error('Project store tidak memiliki file.');
       }
 
-      var baseName = String(data.name || 'Store Project').trim() || 'Store Project';
-      var importBaseName = baseName + ' (Store)';
+      var rawName = String(data.name || 'Store Project').trim() || 'Store Project';
 
-      return listProjects().then(function(projects) {
-        var used = {};
-        (projects || []).forEach(function(p) {
-          if (p && p.name) used[p.name] = true;
-        });
+      var filePayload = files.map(function(file, idx) {
+        var fallbackName = 'file-' + (idx + 1) + '.js';
+        return {
+          name: (file && file.name ? String(file.name).trim() : '') || fallbackName,
+          content: file && typeof file.content === 'string' ? file.content : ''
+        };
+      });
 
-        var finalName = importBaseName;
-        var index = 2;
-        while (used[finalName]) {
-          finalName = importBaseName + ' ' + index;
-          index++;
-        }
-
+      function applyImportToProjectName(finalName) {
         currentProject = finalName;
         apiProjectId = null;
         localStorage.setItem('elcode-lastProject', currentProject);
@@ -831,14 +840,6 @@
         fileSessions = {};
         isLoadingFile = true;
         editor.setValue('', -1);
-
-        var filePayload = files.map(function(file, idx) {
-          var fallbackName = 'file-' + (idx + 1) + '.js';
-          return {
-            name: (file && file.name ? String(file.name).trim() : '') || fallbackName,
-            content: file && typeof file.content === 'string' ? file.content : ''
-          };
-        });
 
         var saveOps = filePayload.map(function(file) {
           return saveFile(file.name, file.content);
@@ -853,9 +854,42 @@
           if (!hasMain) target = filePayload[0].name;
           openFile(target);
           setTimeout(function() { runPreview(); }, 350);
-          appendLog('info', ['Project store berhasil dibuka di editor: "' + currentProject + '".']);
+          if (fromMyPublish) {
+            appendLog('info', ['Publish dibuka di editor (nama project disamakan; project lokal lama diganti jika ada): "' + currentProject + '".']);
+          } else {
+            appendLog('info', ['Project store berhasil dibuka di editor: "' + currentProject + '".']);
+          }
           return true;
         });
+      }
+
+      return listProjects().then(function(projects) {
+        var projectsArr = projects || [];
+
+        if (fromMyPublish) {
+          var publishName = rawName;
+          var exists = projectsArr.some(function(p) { return p && p.name === publishName; });
+          var chain = Promise.resolve();
+          if (exists) {
+            chain = deleteProject(publishName);
+          }
+          return chain.then(function() {
+            return applyImportToProjectName(publishName);
+          });
+        }
+
+        var importBaseName = rawName + ' (Store)';
+        var used = {};
+        projectsArr.forEach(function(p) {
+          if (p && p.name) used[p.name] = true;
+        });
+        var finalName = importBaseName;
+        var index = 2;
+        while (used[finalName]) {
+          finalName = importBaseName + ' ' + index;
+          index++;
+        }
+        return applyImportToProjectName(finalName);
       });
     }).catch(function(err) {
       appendLog('error', ['Gagal membuka project store: ' + (err && err.message ? err.message : err)]);
@@ -890,135 +924,6 @@
       appendLog('error', ['Publish gagal: ' + (err.message || err)]);
     }).finally(function() {
       setPublishLoadingState(false);
-    });
-  }
-
-  function showMyPublishedProjectsDialog() {
-    if (!authUser) {
-      appendLog('warn', ['Silakan login dulu untuk melihat daftar publish.']);
-      showLoginDialog();
-      return;
-    }
-
-    var overlayNode;
-    function closeDialog() {
-      if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
-    }
-
-    function openStoreDetailInApp(item) {
-      var slug = item && item.slug ? String(item.slug) : '';
-      if (!slug) {
-        appendLog('error', ['Slug project tidak tersedia untuk detail.']);
-        return;
-      }
-      window.location.hash = '/store-detail?slug=' + encodeURIComponent(slug);
-    }
-
-    function openDialog(items) {
-      var overlay = el('div').css({
-        position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
-        background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: '99999', fontFamily: 'sans-serif'
-      });
-
-      var listContent;
-      if (!items.length) {
-        listContent = el('div').css({ color: '#888', fontSize: '13px', padding: '8px 0' }).text('Belum ada project yang dipublish.');
-      } else {
-        listContent = el('div').css({ maxHeight: '360px', overflowY: 'auto', paddingRight: '4px' }).child(
-          items.map(function(item) {
-            var projectId = item.project_id;
-            var name = item.name || 'Untitled';
-            var slug = item.slug || '-';
-            var url = item.published_url || '';
-            var isPublished = !!item.is_published;
-            var rowRef = {};
-
-            function setRowBusy(loading) {
-              if (!rowRef.unpublishBtn) return;
-              rowRef.unpublishBtn.disabled = !!loading;
-              rowRef.unpublishBtn.style.opacity = loading ? '0.7' : '1';
-              rowRef.unpublishBtn.style.cursor = loading ? 'progress' : 'pointer';
-              rowRef.unpublishBtn.textContent = loading ? 'Unpublishing...' : 'Unpublish';
-            }
-
-            return el('div').css({
-              background: '#1f1f1f',
-              border: '1px solid #3a3a3a',
-              borderRadius: '6px',
-              padding: '10px 12px',
-              marginBottom: '8px'
-            }).child([
-              el('div').css({ color: '#eee', fontWeight: 'bold', fontSize: '13px', marginBottom: '4px' }).text(name),
-              el('div').css({ color: '#8fb7ff', fontSize: '11px', fontFamily: 'monospace', marginBottom: '6px' }).text('slug: ' + slug),
-              el('div').css({ color: '#9ca3af', fontSize: '11px', marginBottom: '10px', wordBreak: 'break-all' }).text(url || 'URL belum tersedia'),
-              el('div').css({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }).child([
-                el('span').css({ color: isPublished ? '#86efac' : '#fca5a5', fontSize: '11px' }).text(isPublished ? 'Published' : 'Unpublished'),
-                el('div').css({ display: 'flex', gap: '8px' }).child([
-                  url ? el('button').text('Detail').css({
-                    padding: '5px 10px', background: '#2563eb', color: '#fff', border: 'none',
-                    borderRadius: '4px', cursor: 'pointer', fontSize: '11px'
-                  }).click(function() {
-                    openStoreDetailInApp(item);
-                  }) : el('span'),
-                  el('button').link(rowRef, 'unpublishBtn').text('Unpublish').css({
-                    padding: '5px 10px', background: '#b91c1c', color: '#fff', border: 'none',
-                    borderRadius: '4px', cursor: 'pointer', fontSize: '11px'
-                  }).hover(
-                    function() { this.style.background = '#dc2626'; },
-                    function() { this.style.background = '#b91c1c'; }
-                  ).click(function() {
-                    if (!projectId) {
-                      appendLog('error', ['Project ID tidak ditemukan.']);
-                      return;
-                    }
-                    if (!confirm('Unpublish project "' + name + '"?')) return;
-                    setRowBusy(true);
-                    apiRequest('/api/editor/projects/' + projectId + '/unpublish', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' }
-                    }).then(function(resp) {
-                      appendLog('info', ['Project berhasil di-unpublish: ' + name]);
-                      closeDialog();
-                      showMyPublishedProjectsDialog();
-                    }).catch(function(err) {
-                      appendLog('error', ['Unpublish gagal: ' + (err.message || err)]);
-                    }).finally(function() {
-                      setRowBusy(false);
-                    });
-                  })
-                ])
-              ])
-            ]);
-          })
-        );
-      }
-
-      var box = el('div').css({
-        background: '#2d2d2d', borderRadius: '8px', padding: '20px', width: '640px',
-        maxWidth: '92vw', maxHeight: '82vh', boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
-        display: 'flex', flexDirection: 'column'
-      }).child([
-        el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '12px' }).text('My Published Projects'),
-        el('div').css({ flex: '1', minHeight: '120px', overflow: 'hidden', marginBottom: '12px' }).child([listContent]),
-        el('div').css({ display: 'flex', justifyContent: 'flex-end' }).child([
-          el('button').text('Close').css({
-            padding: '6px 14px', background: '#555', color: '#eee', border: 'none',
-            borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
-          }).click(function() { closeDialog(); })
-        ])
-      ]);
-
-      overlay.child([box]);
-      overlayNode = overlay.get();
-      document.body.appendChild(overlayNode);
-    }
-
-    apiRequest('/api/editor/store/me', { method: 'GET' }).then(function(resp) {
-      var items = Array.isArray(resp.data) ? resp.data : [];
-      openDialog(items);
-    }).catch(function(err) {
-      appendLog('error', ['Gagal mengambil daftar publish: ' + (err.message || err)]);
     });
   }
 
@@ -3220,7 +3125,7 @@
         createHeaderDropdown('Browse', '#6b6b9f', [
           { label: 'Documentation', onClick: function() { window.location.hash = '#/documentation'; } },
           { label: 'Store', onClick: function() { window.location.hash = '#/store'; } },
-          { label: 'My Published', onClick: function() { showMyPublishedProjectsDialog(); } },
+          { label: 'My Published', onClick: function() { window.location.hash = '/my-publish'; } },
           { label: 'Snippets', onClick: function() { showSnippetDialog(); } },
         ]),
         createHeaderDropdown('Tools', '#555', [
@@ -3604,9 +3509,9 @@
     openFile('main.js');
     setTimeout(function() { runPreview(); }, 500);
 
-    var storeSlugToImport = getStoreSlugFromNavigationState();
-    if (storeSlugToImport) {
-      await importStoreProjectFromSlug(storeSlugToImport);
+    var importIntent = consumeEditorStoreImportIntent();
+    if (importIntent.slug) {
+      await importStoreProjectFromSlug(importIntent.slug, { fromMyPublish: importIntent.fromMyPublish });
       try {
         var cleanUrl = window.location.pathname + window.location.hash;
         window.history.replaceState({}, '', cleanUrl);

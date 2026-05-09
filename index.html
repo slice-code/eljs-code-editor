@@ -54,15 +54,15 @@
 
 <body style="padding: 0px; margin: 0px; background:#f8fafc;min-height:100dvh;"> 
     <div id="app"></div>
-    <script src="./el.js?v=1.1.5"></script>
-    <script src="./code-editor/zip.js?v=1.1.5"></script>
-    <script src="./layouting/layout.js?v=1.1.5"></script>
+    <script src="./el.js?v=1.1.6"></script>
+    <script src="./code-editor/zip.js?v=1.1.6"></script>
+    <script src="./layouting/layout.js?v=1.1.6"></script>
     
     <!-- Register Service Worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./service-worker.js?v=1.1.5')
+          navigator.serviceWorker.register('./service-worker.js?v=1.1.6')
             .then((registration) => {
               console.log('ServiceWorker registration successful');
               
@@ -97,10 +97,10 @@
     </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
-        const { createDocumentationPage } = await import('./documentation-page.js?v=1.1.5')
-        const { createStorePage } = await import('./store.js?v=1.1.5')
-        const { createStoreDetailPage } = await import('./store-detail.js?v=1.1.5')
-        let editorLoaded = false;
+        const { createDocumentationPage } = await import('./documentation-page.js?v=1.1.6')
+        const { createStorePage } = await import('./store.js?v=1.1.6')
+        const { createStoreDetailPage } = await import('./store-detail.js?v=1.1.6')
+        const { createMyPublishPage } = await import('./my-publish.js?v=1.1.6')6        let editorLoaded = false;
 
         layout.addPage({
           path: '/',
@@ -236,8 +236,7 @@
           hideLayout: true,
           component: async () => {
             if (!editorLoaded) {
-              await import('./code-editor/code.js?v=1.1.5')
-              editorLoaded = true
+              await import('./code-editor/code.js?v=1.1.6')6              editorLoaded = true
             }
             return el('div').child([ codeEditorEl.container ]);
           },
@@ -267,11 +266,20 @@
           },
         })
 
+        layout.addPage({
+          path: '/my-publish',
+          hideLayout: true,
+          component: () => {
+            return createMyPublishPage();
+          },
+        })
+
         addNavbar([
           { name: 'Home', page: '/' },
           { name: 'Editor', page: '/editor' },
           { name: 'Documentation', page: '/documentation' },
           { name: 'Store', page: '/store' },
+          { name: 'My Publish', page: '/my-publish' },
         ])
 
         layout.addSideMenu([
@@ -279,6 +287,7 @@
           { name: 'Editor', page: '/editor', icon: 'fas fa-code' },
           { name: 'Documentation', page: '/documentation', icon: 'fas fa-book' },
           { name: 'Store', page: '/store', icon: 'fas fa-store' },
+          { name: 'My Publish', page: '/my-publish', icon: 'fas fa-cloud-upload-alt' },
         ])
 
         // Set theme (default, blue, dark, light, purple, green, red, orange, teal, pink, gray)
