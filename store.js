@@ -160,9 +160,11 @@ export function createStorePage() {
   }
 
   const page = el('div').css({
-    maxWidth: '1240px',
-    margin: '0 auto',
-    padding: '1.15rem',
+    width: '100%',
+    maxWidth: 'none',
+    margin: 0,
+    boxSizing: 'border-box',
+    padding: 'clamp(0.75rem, 2vw, 1.35rem)',
     fontFamily: 'Roboto, sans-serif'
   }).child([
     el('div').css({
@@ -203,9 +205,10 @@ export function createStorePage() {
       })
     ]),
     el('div').link(refs, 'storeList').css({
-      columnWidth: '240px',
+      columnWidth: 'min(100%, 300px)',
       columnCount: 'auto',
-      columnGap: '0.95rem',
+      columnGap: '1.05rem',
+      columnFill: 'balance',
       width: '100%'
     })
   ]);
