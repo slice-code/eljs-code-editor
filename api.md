@@ -1,0 +1,553 @@
+# API Requirement: `/api/editor`
+
+Dokumen ini mendefinisikan kebutuhan API untuk fitur **Publish** dari `editor.slice-code.com` ke backend `slice-code.com` (PHP).
+
+## Tujuan
+
+- Menyimpan project editor ke server (bukan hanya IndexedDB lokal).
+- Memungkinkan user melanjutkan project dari device/browser lain.
+- Menyediakan mekanisme publish project sehingga bisa diakses publik.
+
+## Ruang Lingkup Fase Awal
+
+- Namespace endpoint: `/api/editor`
+- Auth berbasis JWT yang disimpan di cookie `HttpOnly` dari domain utama `slice-code.com`.
+- Data utama:
+  - `project` (metadata project)
+  - `files` (daftar file source code)
+  - `publish` (status publish + URL publik)
+
+---
+
+## 1) Endpoint Inti yang Wajib
+
+### 1.0 Auth Endpoint (Wajib untuk Publish)
+
+> Login memakai JWT, tetapi token **tidak** disimpan di `localStorage`/`sessionStorage`.
+> Server menyimpan JWT ke cookie agar lebih aman.
+
+#### `POST /api/editor/auth/login`
+Login user dan set cookie token.
+
+**Request body**
+```json
+{
+  "email": "user@mail.com",
+  "password": "secret"
+}
+```
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": "usr_001",
+      "name": "Slice User",
+      "email": "user@mail.com"
+    }
+  }
+}
+```
+
+**Set-Cookie (contoh)**
+- `editor_access_token=<jwt>; HttpOnly; Secure; SameSite=None; Path=/; Domain=.slice-code.com; Max-Age=900`
+- `editor_refresh_token=<jwt>; HttpOnly; Secure; SameSite=None; Path=/api/editor/auth; Domain=.slice-code.com; Max-Age=2592000`
+
+#### `POST /api/editor/auth/refresh`
+Perbarui access token menggunakan refresh token cookie.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "message": "Token refreshed"
+}
+```
+
+#### `POST /api/editor/auth/logout`
+Hapus cookie access/refresh token.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "message": "Logged out"
+}
+```
+
+#### `GET /api/editor/auth/me`
+Validasi sesi login untuk frontend editor.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "usr_001",
+    "name": "Slice User",
+    "email": "user@mail.com"
+  }
+}
+```
+
+#### `POST /api/editor/auth/register`
+Daftar akun baru untuk editor, sekaligus login (set cookie JWT).
+
+**Request body**
+```json
+{
+  "name": "Slice User",
+  "email": "user@mail.com",
+  "password": "secret123",
+  "password_confirmation": "secret123"
+}
+```
+
+**Response 201**
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": "usr_001",
+      "name": "Slice User",
+      "email": "user@mail.com"
+    }
+  },
+  "message": "Register success"
+}
+```
+
+### 1.1 `POST /api/editor/projects`
+Membuat project baru di server.
+
+**Request body**
+```json
+{
+  "name": "My Project",
+  "description": "optional",
+  "template": "default"
+}
+```
+
+**Response 201**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "name": "My Project",
+    "created_at": "2026-05-09T07:00:00Z"
+  }
+}
+```
+
+---
+
+### 1.2 `GET /api/editor/projects`
+Mengambil daftar project milik user login.
+
+**Query opsional**
+- `page`, `limit`, `search`, `sort`
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "project_id": "prj_abc123",
+      "name": "My Project",
+      "updated_at": "2026-05-09T08:00:00Z",
+      "is_published": false
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "limit": 20,
+    "total": 1
+  }
+}
+```
+
+---
+
+### 1.3 `GET /api/editor/projects/{project_id}`
+Mengambil detail 1 project + seluruh file.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "name": "My Project",
+    "description": "",
+    "files": [
+      {
+        "name": "main.js",
+        "content": "console.log('hello')",
+        "updated_at": "2026-05-09T08:01:00Z"
+      }
+    ],
+    "is_published": false,
+    "published_url": null
+  }
+}
+```
+
+---
+
+### 1.4 `PUT /api/editor/projects/{project_id}`
+Update metadata project (rename/deskripsi).
+
+**Request body**
+```json
+{
+  "name": "My Project v2",
+  "description": "updated desc"
+}
+```
+
+---
+
+### 1.5 `DELETE /api/editor/projects/{project_id}`
+Hapus project dan seluruh file.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "message": "Project deleted"
+}
+```
+
+---
+
+### 1.6 `PUT /api/editor/projects/{project_id}/files`
+Simpan semua file project sekaligus (sinkron dari editor).
+
+> Endpoint ini paling penting untuk tombol Save/Auto Save.
+
+**Request body**
+```json
+{
+  "files": [
+    {
+      "name": "main.js",
+      "content": "import './utils.js';"
+    },
+    {
+      "name": "utils.js",
+      "content": "export const x = 1;"
+    }
+  ],
+  "client_updated_at": "2026-05-09T08:10:00Z"
+}
+```
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "saved_files": 2,
+    "updated_at": "2026-05-09T08:10:02Z"
+  }
+}
+```
+
+---
+
+### 1.7 `POST /api/editor/projects/{project_id}/publish`
+Publish project ke URL publik.
+
+> Saat publish, UI mengirim screenshot dari preview iframe sebagai thumbnail.
+
+**Request body**
+```json
+{
+  "visibility": "public",
+  "slug": "my-project",
+  "thumbnail": {
+    "mime_type": "image/jpeg",
+    "data_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
+    "width": 1280,
+    "height": 720
+  }
+}
+```
+
+Keterangan `thumbnail`:
+- `mime_type`: `image/jpeg` atau `image/png`
+- `data_base64`: isi base64 **tanpa** prefix `data:image/...;base64,`
+- `width`, `height`: resolusi screenshot sumber dari UI
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "is_published": true,
+    "published_url": "https://slice-code.com/editor/my-project",
+    "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+    "published_at": "2026-05-09T08:15:00Z"
+  }
+}
+```
+
+---
+
+### 1.8 `POST /api/editor/projects/{project_id}/unpublish`
+Menonaktifkan akses publik project.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "is_published": false,
+    "published_url": null
+  }
+}
+```
+
+---
+
+### 1.9 `GET /api/editor/store`
+Ambil daftar project yang sudah publish untuk halaman Store (public).
+
+**Query opsional**
+- `search`: keyword nama project / author
+- `page`: default 1
+- `limit`: default 12
+- `sort`: `latest` | `popular`
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "project_id": "prj_abc123",
+      "name": "Todo App",
+      "description": "Simple todo with el.js",
+      "slug": "todo-app",
+      "published_url": "https://slice-code.com/editor/todo-app",
+      "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+      "author": {
+        "id": "usr_001",
+        "name": "Slice User"
+      },
+      "stats": {
+        "views": 120,
+        "likes": 23
+      },
+      "published_at": "2026-05-09T08:15:00Z"
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "limit": 12,
+    "total": 1
+  }
+}
+```
+
+### 1.10 `GET /api/editor/store/{slug}`
+Ambil detail 1 project publish untuk halaman detail di Store.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": "prj_abc123",
+    "name": "Todo App",
+    "description": "Simple todo with el.js",
+    "slug": "todo-app",
+    "published_url": "https://slice-code.com/editor/todo-app",
+    "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+    "author": {
+      "id": "usr_001",
+      "name": "Slice User"
+    },
+    "stats": {
+      "views": 120,
+      "likes": 23
+    },
+    "published_at": "2026-05-09T08:15:00Z",
+    "files": [
+      {
+        "name": "main.js",
+        "content": "..."
+      }
+    ]
+  }
+}
+```
+
+### 1.11 `GET /api/editor/store/me`
+Ambil daftar publish milik user login (untuk dashboard creator).
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "project_id": "prj_abc123",
+      "name": "Todo App",
+      "slug": "todo-app",
+      "published_url": "https://slice-code.com/editor/todo-app",
+      "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+      "is_published": true,
+      "published_at": "2026-05-09T08:15:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## 2) Kontrak Respons Standar
+
+Gunakan format konsisten:
+
+```json
+{
+  "success": true,
+  "data": {},
+  "message": "optional"
+}
+```
+
+Saat error:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "name is required",
+    "details": {
+      "field": "name"
+    }
+  }
+}
+```
+
+## 3) Kode Status HTTP
+
+- `200` sukses umum
+- `201` resource baru
+- `400` validasi gagal
+- `401` belum login
+- `403` tidak punya akses ke project
+- `404` project tidak ditemukan
+- `404` slug store tidak ditemukan
+- `409` konflik slug publish
+- `409` email sudah terdaftar (register)
+- `413` payload terlalu besar
+- `415` format thumbnail tidak didukung
+- `429` rate limit
+- `500` server error
+
+## 4) Kebutuhan Validasi Data
+
+- `project.name`: wajib, 1-100 karakter
+- `auth.name`: wajib, 2-100 karakter (register)
+- `auth.email`: wajib, format email valid, unik (register)
+- `auth.password`: wajib, minimal 8 karakter (register)
+- `auth.password_confirmation`: wajib, harus sama dengan `password`
+- `file.name`: wajib, tidak boleh path traversal (`../`)
+- `file.content`: string
+- Minimal harus ada `main.js` sebelum publish
+- Batas file per project (misal 200 file)
+- Batas ukuran total payload simpan (misal 1-2 MB per request fase awal)
+- Validasi thumbnail publish:
+  - maksimal ukuran decoded image (misal 2 MB)
+  - hanya `image/jpeg` dan `image/png`
+  - minimal dimensi (misal 320x180)
+  - maksimal dimensi (misal 3840x2160)
+- `search` store maksimal 100 karakter
+- `limit` store maksimal 50
+
+## 5) Kebutuhan Security
+
+- Semua endpoint `/api/editor/*` wajib auth (kecuali endpoint public reader jika nanti dibuat).
+- CORS hanya izinkan origin:
+  - `https://editor.slice-code.com`
+  - `https://slice-code.com`
+- Wajib pakai JWT di cookie `HttpOnly` + `Secure` + `SameSite=None` (karena beda subdomain).
+- Access token short-lived (contoh 15 menit), refresh token long-lived (contoh 30 hari).
+- Cookie domain direkomendasikan `.slice-code.com` agar bisa dipakai `slice-code.com` dan `editor.slice-code.com`.
+- JWT tidak boleh diekspos ke JavaScript frontend.
+- CSRF protection wajib karena auth berbasis cookie (double submit token atau CSRF header).
+- Validasi ownership: user hanya boleh akses project miliknya.
+- Sanitasi slug publish.
+
+## 6) Kebutuhan Database (Minimal)
+
+Tabel minimum:
+
+- `editor_projects`
+  - `id`, `user_id`, `name`, `description`, `is_published`, `published_slug`, `published_url`, `thumbnail_url`, `created_at`, `updated_at`
+- `editor_files`
+  - `id`, `project_id`, `name`, `content`, `created_at`, `updated_at`
+- (opsional) `editor_project_revisions`
+  - untuk versioning/history publish
+- (opsional) `editor_project_stats`
+  - `project_id`, `views`, `likes`, `updated_at`
+
+## 7) Integrasi Frontend Editor (Tahap Implementasi Berikutnya)
+
+Alur yang akan dipakai editor:
+
+1. User login:
+   - `POST /api/editor/auth/register` (jika belum punya akun)
+   - `POST /api/editor/auth/login`
+   - cek sesi: `GET /api/editor/auth/me`
+2. Editor buka project:
+   - `GET /api/editor/projects`
+   - `GET /api/editor/projects/{id}`
+3. Save/Auto Save:
+   - `PUT /api/editor/projects/{id}/files`
+4. Publish:
+   - Capture screenshot dari preview iframe
+   - `POST /api/editor/projects/{id}/publish`
+   - kirim `thumbnail` di payload publish
+5. Store page (public):
+   - `GET /api/editor/store?search=...`
+   - `GET /api/editor/store/{slug}`
+6. Creator dashboard publish (private):
+   - `GET /api/editor/store/me`
+7. Jika access token expired:
+   - `POST /api/editor/auth/refresh`
+8. Logout:
+   - `POST /api/editor/auth/logout`
+9. Update status publish di UI berdasarkan `is_published` + `published_url`.
+
+## 8) Catatan Implementasi Backend PHP
+
+- Direkomendasikan route berbasis controller:
+  - `EditorProjectController`
+  - `EditorPublishController`
+- Pastikan transaksi DB saat overwrite files (delete lama + insert baru) agar konsisten.
+- Simpan waktu `updated_at` project tiap kali files berubah.
+- Siapkan log audit minimal untuk aksi publish/unpublish.
+
+## 9) Non-Goal Fase Ini
+
+Belum wajib di fase awal:
+
+- Collaboration realtime multi-user
+- Diff patch antar file
+- Partial file sync per line
+- Asset binary upload (image, font, dll)
+
