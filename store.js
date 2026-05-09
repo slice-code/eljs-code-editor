@@ -1,5 +1,6 @@
 export function createStorePage() {
   const refs = {};
+  let selectedSlug = null;
 
   function formatDate(isoString) {
     try {
@@ -199,6 +200,22 @@ export function createStorePage() {
     }
   }
 
+  function openRequestedDetailIfAny() {
+    let slug = selectedSlug;
+    if (!slug) {
+      try {
+        slug = sessionStorage.getItem('store:selectedSlug') || '';
+      } catch (e) {
+        slug = '';
+      }
+    }
+    if (slug) {
+      selectedSlug = slug;
+      loadStoreDetail(slug);
+      try { sessionStorage.removeItem('store:selectedSlug'); } catch (e) {}
+    }
+  }
+
   const page = el('div').css({
     maxWidth: '1240px',
     margin: '0 auto',
@@ -263,5 +280,12 @@ export function createStorePage() {
   ]);
 
   setTimeout(function() { loadStoreList(''); }, 20);
+  openRequestedDetailIfAny();
+  window.addEventListener('elcode:store-open-detail', function(e) {
+    const slug = e && e.detail && e.detail.slug ? String(e.detail.slug) : '';
+    if (!slug) return;
+    selectedSlug = slug;
+    loadStoreDetail(slug);
+  });
   return page;
 }

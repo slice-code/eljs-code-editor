@@ -582,6 +582,7 @@
             })
           }).then(function() {
             closeDialog();
+            alert('Register berhasil. Anda sudah login.');
             appendLog('info', ['Register berhasil. Anda sudah login.']);
             return refreshAuthState();
           }).catch(function(err) {
@@ -802,6 +803,141 @@
       appendLog('error', ['Publish gagal: ' + (err.message || err)]);
     }).finally(function() {
       setPublishLoadingState(false);
+    });
+  }
+
+  function showMyPublishedProjectsDialog() {
+    if (!authUser) {
+      appendLog('warn', ['Silakan login dulu untuk melihat daftar publish.']);
+      showLoginDialog();
+      return;
+    }
+
+    var overlayNode;
+    function closeDialog() {
+      if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
+    }
+
+    function openStoreDetailInApp(item) {
+      var slug = item && item.slug ? String(item.slug) : '';
+      if (!slug) {
+        appendLog('error', ['Slug project tidak tersedia untuk detail.']);
+        return;
+      }
+      try {
+        sessionStorage.setItem('store:selectedSlug', slug);
+      } catch (e) {}
+      window.location.hash = '#/store';
+      setTimeout(function() {
+        window.dispatchEvent(new CustomEvent('elcode:store-open-detail', { detail: { slug: slug } }));
+      }, 30);
+    }
+
+    function openDialog(items) {
+      var overlay = el('div').css({
+        position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+        background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: '99999', fontFamily: 'sans-serif'
+      });
+
+      var listContent;
+      if (!items.length) {
+        listContent = el('div').css({ color: '#888', fontSize: '13px', padding: '8px 0' }).text('Belum ada project yang dipublish.');
+      } else {
+        listContent = el('div').css({ maxHeight: '360px', overflowY: 'auto', paddingRight: '4px' }).child(
+          items.map(function(item) {
+            var projectId = item.project_id;
+            var name = item.name || 'Untitled';
+            var slug = item.slug || '-';
+            var url = item.published_url || '';
+            var isPublished = !!item.is_published;
+            var rowRef = {};
+
+            function setRowBusy(loading) {
+              if (!rowRef.unpublishBtn) return;
+              rowRef.unpublishBtn.disabled = !!loading;
+              rowRef.unpublishBtn.style.opacity = loading ? '0.7' : '1';
+              rowRef.unpublishBtn.style.cursor = loading ? 'progress' : 'pointer';
+              rowRef.unpublishBtn.textContent = loading ? 'Unpublishing...' : 'Unpublish';
+            }
+
+            return el('div').css({
+              background: '#1f1f1f',
+              border: '1px solid #3a3a3a',
+              borderRadius: '6px',
+              padding: '10px 12px',
+              marginBottom: '8px'
+            }).child([
+              el('div').css({ color: '#eee', fontWeight: 'bold', fontSize: '13px', marginBottom: '4px' }).text(name),
+              el('div').css({ color: '#8fb7ff', fontSize: '11px', fontFamily: 'monospace', marginBottom: '6px' }).text('slug: ' + slug),
+              el('div').css({ color: '#9ca3af', fontSize: '11px', marginBottom: '10px', wordBreak: 'break-all' }).text(url || 'URL belum tersedia'),
+              el('div').css({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }).child([
+                el('span').css({ color: isPublished ? '#86efac' : '#fca5a5', fontSize: '11px' }).text(isPublished ? 'Published' : 'Unpublished'),
+                el('div').css({ display: 'flex', gap: '8px' }).child([
+                  url ? el('button').text('Detail').css({
+                    padding: '5px 10px', background: '#2563eb', color: '#fff', border: 'none',
+                    borderRadius: '4px', cursor: 'pointer', fontSize: '11px'
+                  }).click(function() {
+                    openStoreDetailInApp(item);
+                  }) : el('span'),
+                  el('button').link(rowRef, 'unpublishBtn').text('Unpublish').css({
+                    padding: '5px 10px', background: '#b91c1c', color: '#fff', border: 'none',
+                    borderRadius: '4px', cursor: 'pointer', fontSize: '11px'
+                  }).hover(
+                    function() { this.style.background = '#dc2626'; },
+                    function() { this.style.background = '#b91c1c'; }
+                  ).click(function() {
+                    if (!projectId) {
+                      appendLog('error', ['Project ID tidak ditemukan.']);
+                      return;
+                    }
+                    if (!confirm('Unpublish project "' + name + '"?')) return;
+                    setRowBusy(true);
+                    apiRequest('/api/editor/projects/' + projectId + '/unpublish', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' }
+                    }).then(function(resp) {
+                      appendLog('info', ['Project berhasil di-unpublish: ' + name]);
+                      closeDialog();
+                      showMyPublishedProjectsDialog();
+                    }).catch(function(err) {
+                      appendLog('error', ['Unpublish gagal: ' + (err.message || err)]);
+                    }).finally(function() {
+                      setRowBusy(false);
+                    });
+                  })
+                ])
+              ])
+            ]);
+          })
+        );
+      }
+
+      var box = el('div').css({
+        background: '#2d2d2d', borderRadius: '8px', padding: '20px', width: '640px',
+        maxWidth: '92vw', maxHeight: '82vh', boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+        display: 'flex', flexDirection: 'column'
+      }).child([
+        el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '12px' }).text('My Published Projects'),
+        el('div').css({ flex: '1', minHeight: '120px', overflow: 'hidden', marginBottom: '12px' }).child([listContent]),
+        el('div').css({ display: 'flex', justifyContent: 'flex-end' }).child([
+          el('button').text('Close').css({
+            padding: '6px 14px', background: '#555', color: '#eee', border: 'none',
+            borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+          }).click(function() { closeDialog(); })
+        ])
+      ]);
+
+      overlay.child([box]);
+      overlayNode = overlay.get();
+      document.body.appendChild(overlayNode);
+    }
+
+    apiRequest('/api/editor/store/me', { method: 'GET' }).then(function(resp) {
+      var items = Array.isArray(resp.data) ? resp.data : [];
+      openDialog(items);
+    }).catch(function(err) {
+      appendLog('error', ['Gagal mengambil daftar publish: ' + (err.message || err)]);
     });
   }
 
@@ -3003,6 +3139,7 @@
         createHeaderDropdown('Browse', '#6b6b9f', [
           { label: 'Documentation', onClick: function() { window.location.hash = '#/documentation'; } },
           { label: 'Store', onClick: function() { window.location.hash = '#/store'; } },
+          { label: 'My Published', onClick: function() { showMyPublishedProjectsDialog(); } },
           { label: 'Snippets', onClick: function() { showSnippetDialog(); } },
         ]),
         createHeaderDropdown('Tools', '#555', [
