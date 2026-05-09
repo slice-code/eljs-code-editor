@@ -416,7 +416,7 @@
                 dropdownVisible = false;
                 el(connector.dropdownMenu).css(cssLayouting[isMobile ? 'mobile' : 'desktop'].dropdownMenu).get();
                 (async () => {
-                  try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) { }
+                  try { await fetch('https://slice-code.com/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) { }
                   if (window.layout) window.layout.setRole(null);
                   window.location.hash = '#/login';
                 })();

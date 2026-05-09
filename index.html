@@ -38,15 +38,15 @@
 
 <body style="padding: 0px; margin: 0px; background:#f8fafc;min-height:100dvh;"> 
     <div id="app"></div>
-    <script src="./el.js?v=1.0.9"></script>
-    <script src="./code-editor/zip.js?v=1.0.9"></script>
-    <script src="./layouting/layout.js?v=1.0.9"></script>
+    <script src="./el.js?v=1.1.0"></script>
+    <script src="./code-editor/zip.js?v=1.1.0"></script>
+    <script src="./layouting/layout.js?v=1.1.0"></script>
     
     <!-- Register Service Worker for PWA -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./service-worker.js?v=1.0.9')
+          navigator.serviceWorker.register('./service-worker.js?v=1.1.0')
             .then((registration) => {
               console.log('ServiceWorker registration successful');
               
@@ -81,8 +81,8 @@
     </script>
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
-        const { createDocumentationPage } = await import('./documentation-page.js?v=1.0.9')
-        const { createStorePage } = await import('./store.js?v=1.0.9')
+        const { createDocumentationPage } = await import('./documentation-page.js?v=1.1.0')
+        const { createStorePage } = await import('./store.js?v=1.1.0')
         let editorLoaded = false;
 
         layout.addPage({
@@ -219,7 +219,7 @@
           hideLayout: true,
           component: async () => {
             if (!editorLoaded) {
-              await import('./code-editor/code.js?v=1.0.9')
+              await import('./code-editor/code.js?v=1.1.0')
               editorLoaded = true
             }
             return el('div').child([ codeEditorEl.container ]);

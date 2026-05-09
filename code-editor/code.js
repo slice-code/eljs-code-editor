@@ -300,11 +300,21 @@
     });
   }
 
+  var API_BASE_URL = 'https://slice-code.com';
+
+  function buildApiUrl(path) {
+    if (/^https?:\/\//i.test(path || '')) return path;
+    var cleanPath = String(path || '');
+    if (!cleanPath) return API_BASE_URL;
+    if (cleanPath.charAt(0) !== '/') cleanPath = '/' + cleanPath;
+    return API_BASE_URL.replace(/\/$/, '') + cleanPath;
+  }
+
   function apiRequest(path, options) {
     var requestOptions = options || {};
     requestOptions.credentials = 'include';
     if (!requestOptions.headers) requestOptions.headers = {};
-    return fetch(path, requestOptions).then(function(res) {
+    return fetch(buildApiUrl(path), requestOptions).then(function(res) {
       return res.json().catch(function() { return {}; }).then(function(body) {
         if (!res.ok || body.success === false) {
           var message = (body && body.error && body.error.message) || body.message || ('Request failed (' + res.status + ')');
