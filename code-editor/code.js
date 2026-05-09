@@ -776,7 +776,16 @@
     });
   }
 
-  function getStoreSlugFromSearch() {
+  function getStoreSlugFromNavigationState() {
+    var slugFromSession = '';
+    try {
+      slugFromSession = String(sessionStorage.getItem('editor:storeSlug') || '').trim();
+      if (slugFromSession) {
+        sessionStorage.removeItem('editor:storeSlug');
+        return slugFromSession;
+      }
+    } catch (e) {}
+
     try {
       var params = new URLSearchParams(window.location.search || '');
       return String(params.get('storeSlug') || '').trim();
@@ -902,8 +911,7 @@
         appendLog('error', ['Slug project tidak tersedia untuk detail.']);
         return;
       }
-      var detailUrl = window.location.pathname + '#/store-detail?slug=' + encodeURIComponent(slug);
-      window.open(detailUrl, '_blank');
+      window.location.hash = '/store-detail?slug=' + encodeURIComponent(slug);
     }
 
     function openDialog(items) {
@@ -3596,7 +3604,7 @@
     openFile('main.js');
     setTimeout(function() { runPreview(); }, 500);
 
-    var storeSlugToImport = getStoreSlugFromSearch();
+    var storeSlugToImport = getStoreSlugFromNavigationState();
     if (storeSlugToImport) {
       await importStoreProjectFromSlug(storeSlugToImport);
       try {
