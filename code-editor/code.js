@@ -776,6 +776,84 @@
     });
   }
 
+  function getStoreSlugFromSearch() {
+    try {
+      var params = new URLSearchParams(window.location.search || '');
+      return String(params.get('storeSlug') || '').trim();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function importStoreProjectFromSlug(slug) {
+    if (!slug) return Promise.resolve(false);
+
+    appendLog('info', ['Mengambil project dari Store: ' + slug + ' ...']);
+
+    return apiRequest('/api/editor/store/' + encodeURIComponent(slug), { method: 'GET' }).then(function(resp) {
+      var data = resp && resp.data ? resp.data : {};
+      var files = Array.isArray(data.files) ? data.files : [];
+      if (!files.length) {
+        throw new Error('Project store tidak memiliki file.');
+      }
+
+      var baseName = String(data.name || 'Store Project').trim() || 'Store Project';
+      var importBaseName = baseName + ' (Store)';
+
+      return listProjects().then(function(projects) {
+        var used = {};
+        (projects || []).forEach(function(p) {
+          if (p && p.name) used[p.name] = true;
+        });
+
+        var finalName = importBaseName;
+        var index = 2;
+        while (used[finalName]) {
+          finalName = importBaseName + ' ' + index;
+          index++;
+        }
+
+        currentProject = finalName;
+        apiProjectId = null;
+        localStorage.setItem('elcode-lastProject', currentProject);
+        connector.projectName.textContent = currentProject;
+
+        currentFile = null;
+        fileSessions = {};
+        isLoadingFile = true;
+        editor.setValue('', -1);
+
+        var filePayload = files.map(function(file, idx) {
+          var fallbackName = 'file-' + (idx + 1) + '.js';
+          return {
+            name: (file && file.name ? String(file.name).trim() : '') || fallbackName,
+            content: file && typeof file.content === 'string' ? file.content : ''
+          };
+        });
+
+        var saveOps = filePayload.map(function(file) {
+          return saveFile(file.name, file.content);
+        });
+
+        return Promise.all(saveOps).then(function() {
+          return saveProject();
+        }).then(function() {
+          refreshFileList();
+          var target = 'main.js';
+          var hasMain = filePayload.some(function(f) { return f.name === 'main.js'; });
+          if (!hasMain) target = filePayload[0].name;
+          openFile(target);
+          setTimeout(function() { runPreview(); }, 350);
+          appendLog('info', ['Project store berhasil dibuka di editor: "' + currentProject + '".']);
+          return true;
+        });
+      });
+    }).catch(function(err) {
+      appendLog('error', ['Gagal membuka project store: ' + (err && err.message ? err.message : err)]);
+      return false;
+    });
+  }
+
   function publishProjectToApi() {
     if (!authUser) {
       appendLog('warn', ['Silakan login dulu sebelum publish.']);
@@ -824,13 +902,8 @@
         appendLog('error', ['Slug project tidak tersedia untuk detail.']);
         return;
       }
-      try {
-        sessionStorage.setItem('store:selectedSlug', slug);
-      } catch (e) {}
-      window.location.hash = '#/store';
-      setTimeout(function() {
-        window.dispatchEvent(new CustomEvent('elcode:store-open-detail', { detail: { slug: slug } }));
-      }, 30);
+      var detailUrl = window.location.pathname + '#/store?slug=' + encodeURIComponent(slug);
+      window.open(detailUrl, '_blank');
     }
 
     function openDialog(items) {
@@ -3522,6 +3595,15 @@
     refreshFileList();
     openFile('main.js');
     setTimeout(function() { runPreview(); }, 500);
+
+    var storeSlugToImport = getStoreSlugFromSearch();
+    if (storeSlugToImport) {
+      await importStoreProjectFromSlug(storeSlugToImport);
+      try {
+        var cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, '', cleanUrl);
+      } catch (e) {}
+    }
 
     // Resizable logs panel
     var resizer = connector.resizer;

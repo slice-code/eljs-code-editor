@@ -2,6 +2,14 @@ export function createStorePage() {
   const refs = {};
   let selectedSlug = null;
 
+  function getStoreSlugFromLocation() {
+    const hash = window.location.hash || '';
+    const qIndex = hash.indexOf('?');
+    if (qIndex === -1) return '';
+    const params = new URLSearchParams(hash.slice(qIndex + 1));
+    return (params.get('slug') || '').trim();
+  }
+
   function formatDate(isoString) {
     try {
       return new Date(isoString).toLocaleString();
@@ -148,7 +156,12 @@ export function createStorePage() {
                 }).text('Likes ' + likes)
               ])
             ])
-          ]).click(function() { loadStoreDetail(item.slug); });
+          ]).click(function() {
+            const slug = getSafeText(item.slug, '');
+            if (!slug) return;
+            const detailUrl = window.location.pathname + '#/store?slug=' + encodeURIComponent(slug);
+            window.open(detailUrl, '_blank');
+          });
         })
       ).get();
     } catch (error) {
@@ -182,15 +195,21 @@ export function createStorePage() {
         el('div').css({ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.2rem' }).text('Author: ' + getSafeText(data.author && data.author.name, 'Unknown')),
         el('div').css({ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.2rem' }).text('Published: ' + formatDate(data.published_at)),
         el('div').css({ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.9rem' }).text('Views: ' + ((data.stats && data.stats.views) || 0) + ' | Likes: ' + ((data.stats && data.stats.likes) || 0)),
-        el('a').attr('href', data.published_url || '#').attr('target', '_blank').text('Open Published URL').css({
-          display: 'inline-block',
+        el('button').text('Open in Editor').css({
+          display: 'inline-flex',
           background: '#2563eb',
           color: '#fff',
           padding: '0.52rem 0.85rem',
           borderRadius: '0.5rem',
-          textDecoration: 'none',
+          border: 'none',
+          cursor: 'pointer',
           fontSize: '0.85rem',
           fontWeight: '600'
+        }).click(function() {
+          const targetSlug = getSafeText(data.slug || slug, '');
+          if (!targetSlug) return;
+          const editorUrl = window.location.pathname + '?storeSlug=' + encodeURIComponent(targetSlug) + '#/editor';
+          window.open(editorUrl, '_blank');
         })
       ]).get();
     } catch (error) {
@@ -201,7 +220,7 @@ export function createStorePage() {
   }
 
   function openRequestedDetailIfAny() {
-    let slug = selectedSlug;
+    let slug = selectedSlug || getStoreSlugFromLocation();
     if (!slug) {
       try {
         slug = sessionStorage.getItem('store:selectedSlug') || '';
