@@ -685,7 +685,7 @@
         timeoutId: setTimeout(function() {
           pendingThumbnailRequest = null;
           resolve(buildFallbackThumbnail());
-        }, 3000)
+        }, THUMBNAIL_CAPTURE_TIMEOUT_MS)
       };
 
       iframeEl.contentWindow.postMessage({
@@ -2702,7 +2702,15 @@
 
   var previewTimeout = null;
   var PREVIEW_TIMEOUT_MS = 3000; // 3 seconds max execution time
-  
+  /** Tanpa allow-same-origin, iframe sandbox punya origin opaque → canvas.toDataURL() sering SecurityError; thumbnail publish jatuh ke fallback. */
+  var PREVIEW_IFRAME_SANDBOX = 'allow-scripts allow-same-origin';
+  var THUMBNAIL_CAPTURE_TIMEOUT_MS = 8000;
+
+  function setPreviewIframeSandbox(ifr) {
+    if (!ifr) return;
+    ifr.setAttribute('sandbox', PREVIEW_IFRAME_SANDBOX);
+  }
+
   function killAndRecreateIframe() {
     var iframeEl = connector.preview;
     var parent = iframeEl.parentElement;
@@ -2710,7 +2718,7 @@
     newIframe.style.cssText = iframeEl.style.cssText;
     newIframe.className = iframeEl.className;
     newIframe.width = iframeEl.width;
-    newIframe.sandbox = 'allow-scripts';
+    setPreviewIframeSandbox(newIframe);
     parent.replaceChild(newIframe, iframeEl);
     connector.preview = newIframe;
     console.log('[Preview] Iframe recreated');
@@ -2882,7 +2890,7 @@
       // Load into sandboxed iframe - kill and recreate to force reload
       killAndRecreateIframe();
       var iframeEl = connector.preview;
-      iframeEl.sandbox = 'allow-scripts';
+      setPreviewIframeSandbox(iframeEl);
       iframeEl.style.background = '#fff';
       iframeEl.style.opacity = '1';
       
@@ -3255,7 +3263,7 @@
           borderRadius: '2px'
         })
       ]),
-      el('iframe').link(connector, 'preview').attr('sandbox', 'allow-scripts').width('450px').class('elcode-editor').css({
+      el('iframe').link(connector, 'preview').attr('sandbox', PREVIEW_IFRAME_SANDBOX).width('450px').class('elcode-editor').css({
         backgroundColor: '#fff',
       }),
     ]),

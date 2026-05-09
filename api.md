@@ -5,9 +5,12 @@ Dokumen ini mendefinisikan kebutuhan API untuk fitur **Publish** dari `editor.sl
 ## Pembaruan implementasi (sinkron backend)
 
 - **Access token (cookie `editor_access_token`)**: masa berlaku **24 jam** (`Max-Age=86400`). Refresh token tetap long-lived (mis. ~30 hari).
-- **Publish ulang / update publish** (`POST .../publish`): boleh dipanggil lagi untuk project yang sama. Jika **slug tidak berubah**, server **mempertahankan `published_at`** (tanggal publish pertama). Jika **slug berubah** atau pertama kali publish, **`published_at` di-set ulang** ke waktu sekarang. Slug yang bentrok dengan project **lain** tetap `409`.
+- **Slug publish**: unik per **`(user_id, published_slug)`** — dua user berbeda boleh memakai **slug teks yang sama**. Referensi publik = **`author_ref` (`usr_<id>`) + slug**, bukan slug saja.
+- **URL publik** (`published_url`): `{SITE_URL}/editor/usr_{user_id}/{slug}` (contoh `https://slice-code.com/editor/usr_12/todo-app`).
+- **Publish ulang / replace**: jika **user yang sama** publish project lain dengan slug yang sudah dipakai project lain yang masih published, project lama **otomatis di-unpublish** (replace); respons bisa menyertakan **`replaced_project_id`**. Tidak ada **409** antar-user untuk slug sama.
+- **Cek slug sebelum publish**: `GET /api/editor/projects/publish-slug-check?slug=...&except_project_id=prj_x` — untuk akurasi saat mengedit project yang sedang dibuka, kirim **`except_project_id`** agar project itu tidak dianggap “yang akan diganti”.
 - **Unpublish**: selain `published_url` dan `published_at`, field **`published_slug`** di basis data juga dikosongkan agar state konsisten.
-- **Store (`GET /api/editor/store`, `GET /api/editor/store/{slug}`)**: objek **`author`** selalu mengacu pada **pemilik project** (`editor_projects.user_id`), dengan `name` dari baris `users` yang id-nya sama. Query memakai kolom eksplisit (bukan `p.*`) agar nama project dan nama user tidak tertukar di hasil PDO.
+- **Store**: detail publik memakai **`GET /api/editor/store/{author_ref}/{slug}`** (`author_ref` = `usr_123` atau angka `123`). Di tiap item ada **`author_ref`** selain **`author`**.
 
 ## Tujuan
 
@@ -304,12 +307,35 @@ Keterangan `thumbnail`:
   "data": {
     "project_id": "prj_abc123",
     "is_published": true,
-    "published_url": "https://slice-code.com/editor/my-project",
+    "author_ref": "usr_001",
+    "published_url": "https://slice-code.com/editor/usr_001/my-project",
     "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
-    "published_at": "2026-05-09T08:15:00Z"
+    "published_at": "2026-05-09T08:15:00Z",
+    "replaced_project_id": null
   }
 }
 ```
+
+`replaced_project_id`: terisi `prj_…` jika publish ini menggantikan publish lain milik **user yang sama** dengan slug yang sama.
+
+#### `GET /api/editor/projects/publish-slug-check`
+(Bukan Wajib fase awal, tetapi disediakan untuk UI konfirmasi replace.)
+
+**Query**
+- `slug` (wajib)
+- `except_project_id` (opsional): `prj_…` project yang sedang diedit — agar slug yang sudah dipakai project itu tidak dilaporkan sebagai “akan mengganti”.
+
+**Response 200**
+```json
+{
+  "success": true,
+  "data": {
+    "slug": "my-project",
+    "would_replace_project_id": "prj_xyz"
+  }
+}
+```
+`would_replace_project_id` = `null` jika tidak ada project published lain milik user dengan slug itu (atau setelah mengabaikan `except_project_id`).
 
 ---
 
@@ -352,7 +378,8 @@ Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user
       "name": "Todo App",
       "description": "Simple todo with el.js",
       "slug": "todo-app",
-      "published_url": "https://slice-code.com/editor/todo-app",
+      "author_ref": "usr_001",
+      "published_url": "https://slice-code.com/editor/usr_001/todo-app",
       "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
       "author": {
         "id": "usr_001",
@@ -373,8 +400,8 @@ Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user
 }
 ```
 
-### 1.10 `GET /api/editor/store/{slug}`
-Ambil detail 1 project publish untuk halaman detail di Store.
+### 1.10 `GET /api/editor/store/{author_ref}/{slug}`
+Ambil detail 1 project publish untuk halaman detail di Store. **`author_ref`** = pemilik (`usr_123` atau `123`).
 
 **Response 200**
 ```json
@@ -385,7 +412,8 @@ Ambil detail 1 project publish untuk halaman detail di Store.
     "name": "Todo App",
     "description": "Simple todo with el.js",
     "slug": "todo-app",
-    "published_url": "https://slice-code.com/editor/todo-app",
+    "author_ref": "usr_001",
+    "published_url": "https://slice-code.com/editor/usr_001/todo-app",
     "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
     "author": {
       "id": "usr_001",
@@ -418,7 +446,8 @@ Ambil daftar publish milik user login (untuk dashboard creator).
       "project_id": "prj_abc123",
       "name": "Todo App",
       "slug": "todo-app",
-      "published_url": "https://slice-code.com/editor/todo-app",
+      "author_ref": "usr_001",
+      "published_url": "https://slice-code.com/editor/usr_001/todo-app",
       "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
       "is_published": true,
       "published_at": "2026-05-09T08:15:00Z"
@@ -464,8 +493,7 @@ Saat error:
 - `401` belum login
 - `403` tidak punya akses ke project
 - `404` project tidak ditemukan
-- `404` slug store tidak ditemukan
-- `409` konflik slug publish
+- `404` kombinasi `author_ref` + slug store tidak ditemukan
 - `409` email sudah terdaftar (register)
 - `413` payload terlalu besar
 - `415` format thumbnail tidak didukung
@@ -512,6 +540,7 @@ Tabel minimum:
 
 - `editor_projects`
   - `id`, `user_id`, `name`, `description`, `is_published`, `published_slug`, `published_url`, `thumbnail_url`, `created_at`, `updated_at`
+  - unik: **`(user_id, published_slug)`** (bukan `published_slug` saja)
 - `editor_files`
   - `id`, `project_id`, `name`, `content`, `created_at`, `updated_at`
 - (opsional) `editor_project_revisions`
@@ -538,7 +567,7 @@ Alur yang akan dipakai editor:
    - kirim `thumbnail` di payload publish
 5. Store page (public):
    - `GET /api/editor/store?search=...`
-   - `GET /api/editor/store/{slug}`
+   - `GET /api/editor/store/{author_ref}/{slug}`
 6. Creator dashboard publish (private):
    - `GET /api/editor/store/me`
 7. Jika access token expired:
