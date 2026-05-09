@@ -631,6 +631,25 @@
     });
   }
 
+  /** Deskripsi terbaru dari server untuk dialog publish (PUT terpisah dari body publish). */
+  function fetchRemoteProjectDescription() {
+    if (!apiProjectId) return Promise.resolve('');
+    return apiRequest('/api/editor/projects/' + apiProjectId, { method: 'GET' }).then(function(resp) {
+      var d = resp.data || {};
+      return String(d.description != null ? d.description : '').trim();
+    }).catch(function() {
+      return '';
+    });
+  }
+
+  function updateRemoteProjectMeta(name, description) {
+    return apiRequest('/api/editor/projects/' + apiProjectId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, description: description })
+    });
+  }
+
   function syncProjectToApi() {
     return ensureRemoteProject().then(function(projectId) {
       return collectProjectFiles().then(function(files) {
@@ -963,6 +982,89 @@
     });
   }
 
+  /**
+   * Dialog publish: slug + deskripsi (deskripsi disimpan lewat PUT project, lalu POST publish — sesuai api.md).
+   */
+  function showPublishDialog(slugDefault, initialDescription) {
+    var overlayNode;
+    function closeDialog() {
+      if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
+    }
+
+    var slugInput = el('input').attr('type', 'text').attr('placeholder', 'slug-url').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box'
+    }).get();
+    slugInput.value = slugDefault || 'my-project';
+
+    var descInput = el('textarea').attr('placeholder', 'Deskripsi singkat untuk halaman Store (opsional)').css({
+      width: '100%', minHeight: '88px', resize: 'vertical', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box',
+      fontFamily: 'sans-serif'
+    }).get();
+    descInput.value = initialDescription || '';
+
+    var overlay = el('div').css({
+      position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+      background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: '99999', fontFamily: 'sans-serif'
+    });
+    var box = el('div').css({
+      background: '#2d2d2d', borderRadius: '8px', padding: '20px', width: '420px', maxWidth: 'calc(100vw - 32px)',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+    }).child([
+      el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '10px' }).text('Publish project'),
+      el('div').css({ fontSize: '11px', color: '#94a3b8', marginBottom: '8px', lineHeight: '1.45' }).text(
+        'Slug untuk URL publik. Deskripsi disimpan di metadata project dan tampil di Store (bukan di body request publish).'
+      ),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Slug'),
+      el('div').css({ marginBottom: '10px' }).child([el(slugInput)]),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Deskripsi'),
+      el('div').css({ marginBottom: '14px' }).child([el(descInput)]),
+      el('div').css({ display: 'flex', justifyContent: 'flex-end', gap: '8px' }).child([
+        el('button').text('Batal').css({
+          padding: '6px 12px', background: '#555', color: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() { closeDialog(); }),
+        el('button').text('Publish').css({
+          padding: '6px 12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() {
+          var slug = String(slugInput.value || '').trim();
+          if (!slug) {
+            appendLog('warn', ['Slug publish tidak boleh kosong.']);
+            return;
+          }
+          var description = String(descInput.value || '').trim();
+          closeDialog();
+          setPublishLoadingState(true);
+          updateRemoteProjectMeta(currentProject, description)
+            .then(function() { return syncProjectToApi(); })
+            .then(function() { return getThumbnailPayloadForPublish(); })
+            .then(function(thumbnail) {
+              return apiRequest('/api/editor/projects/' + apiProjectId + '/publish', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ visibility: 'public', slug: slug, thumbnail: thumbnail })
+              });
+            })
+            .then(function(resp) {
+              var url = resp.data && resp.data.published_url ? resp.data.published_url : '';
+              appendLog('info', ['Publish berhasil' + (url ? ': ' + url : '.')]);
+            })
+            .catch(function(err) {
+              appendLog('error', ['Publish gagal: ' + (err.message || err)]);
+            })
+            .finally(function() {
+              setPublishLoadingState(false);
+            });
+        })
+      ])
+    ]);
+    overlay.child([box]);
+    overlayNode = overlay.get();
+    document.body.appendChild(overlayNode);
+    setTimeout(function() { try { slugInput.focus(); slugInput.select(); } catch (e) {} }, 50);
+  }
+
   function publishProjectToApi() {
     if (!authUser) {
       appendLog('warn', ['Silakan login dulu sebelum publish.']);
@@ -970,27 +1072,14 @@
       return;
     }
     var slugDefault = currentProject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    var slug = prompt('Slug publish:', slugDefault || 'my-project');
-    if (!slug || !slug.trim()) return;
-    slug = slug.trim();
-    setPublishLoadingState(true);
-
-    syncProjectToApi().then(function() {
-      return getThumbnailPayloadForPublish();
-    }).then(function(thumbnail) {
-      return apiRequest('/api/editor/projects/' + apiProjectId + '/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visibility: 'public', slug: slug, thumbnail: thumbnail })
+    ensureRemoteProject()
+      .then(function() { return fetchRemoteProjectDescription(); })
+      .then(function(desc) {
+        showPublishDialog(slugDefault || 'my-project', desc);
+      })
+      .catch(function(err) {
+        appendLog('error', ['Gagal menyiapkan publish: ' + (err.message || err)]);
       });
-    }).then(function(resp) {
-      var url = resp.data && resp.data.published_url ? resp.data.published_url : '';
-      appendLog('info', ['Publish berhasil' + (url ? ': ' + url : '.')]);
-    }).catch(function(err) {
-      appendLog('error', ['Publish gagal: ' + (err.message || err)]);
-    }).finally(function() {
-      setPublishLoadingState(false);
-    });
   }
 
   function showProjectLoadDialog() {

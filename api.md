@@ -11,6 +11,10 @@ Dokumen ini mendefinisikan kebutuhan API untuk fitur **Publish** dari `editor.sl
 - **Cek slug sebelum publish**: `GET /api/editor/projects/publish-slug-check?slug=...&except_project_id=prj_x` — untuk akurasi saat mengedit project yang sedang dibuka, kirim **`except_project_id`** agar project itu tidak dianggap “yang akan diganti”.
 - **Unpublish**: selain `published_url` dan `published_at`, field **`published_slug`** di basis data juga dikosongkan agar state konsisten.
 - **Store**: detail publik memakai **`GET /api/editor/store/{author_ref}/{slug}`** (`author_ref` = `usr_123` atau angka `123`). Di tiap item ada **`author_ref`** selain **`author`**.
+- **Store satu segmen (legacy)**: **`GET /api/editor/store/{slug}`** — jika tidak ada ambigu (hanya satu project published dengan slug itu). Jika beberapa creator pakai slug sama → **409** `AMBIGUOUS_SLUG` + daftar kandidat; gunakan URL dua segmen. Entry bootstrap juga menangani path ini jika route Router tertinggal deploy.
+- **Thumbnail publik**: gambar disimpan di DB (`thumbnail_data`); URL **`thumbnail_url`** = `{SITE_URL}/api/editor/public/thumbnails/prj_{project_id}` (bukan CDN placeholder).
+- **`author` di store**: **`author.name`** = kolom **`users.name`** (nama tampilan); **`author.username`** = kolom **`users.user`** (username login).
+- **Publish respons**: menyertakan **`name`**, **`description`** (dari `editor_projects`), **`slug`** — mengikuti data DB saat publish (deskripsi diubah lewat `PUT /projects/{id}`, bukan body publish).
 
 ## Tujuan
 
@@ -300,23 +304,27 @@ Keterangan `thumbnail`:
 - `data_base64`: isi base64 **tanpa** prefix `data:image/...;base64,`
 - `width`, `height`: resolusi screenshot sumber dari UI
 
-**Response 200**
+**Response 200** — **`name`**, **`description`**, **`slug`** diisi dari baris **`editor_projects`** (deskripsi tidak di-set lewat body publish; ubah dulu via **`PUT /api/editor/projects/{project_id}`**).
 ```json
 {
   "success": true,
   "data": {
     "project_id": "prj_abc123",
+    "name": "My Project",
+    "description": "Deskripsi dari metadata project",
+    "slug": "my-project",
     "is_published": true,
     "author_ref": "usr_001",
     "published_url": "https://slice-code.com/editor/usr_001/my-project",
-    "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+    "thumbnail_url": "https://slice-code.com/api/editor/public/thumbnails/prj_abc123",
     "published_at": "2026-05-09T08:15:00Z",
     "replaced_project_id": null
   }
 }
 ```
 
-`replaced_project_id`: terisi `prj_…` jika publish ini menggantikan publish lain milik **user yang sama** dengan slug yang sama.
+- **`thumbnail_url`**: `null` jika tidak ada thumbnail; jika ada gambar di payload → URL **`GET /api/editor/public/thumbnails/prj_{id}`** (tanpa auth).
+- **`replaced_project_id`**: terisi `prj_…` jika publish ini menggantikan publish lain milik **user yang sama** dengan slug yang sama.
 
 #### `GET /api/editor/projects/publish-slug-check`
 (Bukan Wajib fase awal, tetapi disediakan untuk UI konfirmasi replace.)
@@ -360,7 +368,10 @@ Menonaktifkan akses publik project. Di sisi server, **`is_published`**, **`publi
 Ambil daftar project yang sudah publish untuk halaman Store (public).
 
 **Author di response**  
-Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user_id`). `author.name` = nama dari tabel `users` untuk id tersebut. Jika pemilik project bukan akun yang sama dengan yang membuat konten di UI, periksa `user_id` saat project dibuat.
+- **`author.id`** = `usr_<user_id>` pemilik (`editor_projects.user_id`).  
+- **`author.name`** = kolom **`users.name`** (nama tampilan).  
+- **`author.username`** = kolom **`users.user`** (username login).  
+Jika nama di UI tidak sesuai, periksa **`user_id`** project dan baris **`users`** yang bersangkutan.
 
 **Query opsional**
 - `search`: keyword nama project / author
@@ -380,10 +391,11 @@ Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user
       "slug": "todo-app",
       "author_ref": "usr_001",
       "published_url": "https://slice-code.com/editor/usr_001/todo-app",
-      "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+      "thumbnail_url": "https://slice-code.com/api/editor/public/thumbnails/prj_abc123",
       "author": {
         "id": "usr_001",
-        "name": "Slice User"
+        "name": "Slice User",
+        "username": "slice_user"
       },
       "stats": {
         "views": 120,
@@ -401,7 +413,10 @@ Field `author.id` = `usr_<user_id>` pemilik baris project (`editor_projects.user
 ```
 
 ### 1.10 `GET /api/editor/store/{author_ref}/{slug}`
-Ambil detail 1 project publish untuk halaman detail di Store. **`author_ref`** = pemilik (`usr_123` atau `123`).
+Ambil detail 1 project publish untuk halaman detail di Store. **`author_ref`** = pemilik (`usr_123` atau `123`). Bentuk respons JSON (termasuk `author`, `files`, dll.) **sama** dengan contoh di **§1.10a** di bawah.
+
+### 1.10a `GET /api/editor/store/{slug}` (opsional / legacy)
+Satu segmen setelah `store/` (tanpa `author_ref`). Hanya jika **tepat satu** project published memakai slug itu. Jika lebih dari satu → **409** `AMBIGUOUS_SLUG` + `candidates`. Untuk kanonis gunakan **§1.10**.
 
 **Response 200**
 ```json
@@ -414,10 +429,11 @@ Ambil detail 1 project publish untuk halaman detail di Store. **`author_ref`** =
     "slug": "todo-app",
     "author_ref": "usr_001",
     "published_url": "https://slice-code.com/editor/usr_001/todo-app",
-    "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+    "thumbnail_url": "https://slice-code.com/api/editor/public/thumbnails/prj_abc123",
     "author": {
       "id": "usr_001",
-      "name": "Slice User"
+      "name": "Slice User",
+      "username": "slice_user"
     },
     "stats": {
       "views": 120,
@@ -448,7 +464,7 @@ Ambil daftar publish milik user login (untuk dashboard creator).
       "slug": "todo-app",
       "author_ref": "usr_001",
       "published_url": "https://slice-code.com/editor/usr_001/todo-app",
-      "thumbnail_url": "https://cdn.slice-code.com/editor-thumbnails/prj_abc123.jpg",
+      "thumbnail_url": "https://slice-code.com/api/editor/public/thumbnails/prj_abc123",
       "is_published": true,
       "published_at": "2026-05-09T08:15:00Z"
     }
@@ -495,6 +511,7 @@ Saat error:
 - `404` project tidak ditemukan
 - `404` kombinasi `author_ref` + slug store tidak ditemukan
 - `409` email sudah terdaftar (register)
+- `409` slug store legacy ambigu (`AMBIGUOUS_SLUG` — beberapa project published dengan slug sama; gunakan URL dua segmen)
 - `413` payload terlalu besar
 - `415` format thumbnail tidak didukung
 - `429` rate limit

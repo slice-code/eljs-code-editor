@@ -259,7 +259,22 @@ export function createStoreDetailPage() {
           ),
           el('div').css({ flex: '2 1 320px', minWidth: '240px' }).child([
             el('h3').text(getSafeText(data.name, 'Untitled')).css({ fontSize: '1.35rem', fontWeight: '800', color: '#0f172a', marginBottom: '0.5rem', lineHeight: '1.3' }),
-            el('div').text(getSafeText(data.description)).css({ color: '#334155', marginBottom: '0.75rem', lineHeight: '1.6' }),
+            el('div').css({ marginBottom: '0.75rem' }).child([
+              el('div').text('Deskripsi').css({
+                fontSize: '0.72rem',
+                fontWeight: '700',
+                color: '#64748b',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                marginBottom: '0.35rem'
+              }),
+              (function() {
+                var raw = String(data.description != null ? data.description : '').trim();
+                return raw
+                  ? el('div').text(raw).css({ color: '#334155', lineHeight: '1.65', whiteSpace: 'pre-wrap' })
+                  : el('div').text('Belum ada deskripsi.').css({ color: '#94a3b8', fontSize: '0.92rem', fontStyle: 'italic' });
+              })()
+            ]),
             el('div').css({ fontSize: '0.9rem', color: '#64748b', marginBottom: '0.2rem' }).text('Author: ' + getSafeText(data.author && data.author.name, 'Unknown')),
             el('div').css({ fontSize: '0.9rem', color: '#64748b', marginBottom: '0.2rem' }).text('Published: ' + formatDate(data.published_at)),
             el('div').css({ fontSize: '0.9rem', color: '#64748b', marginBottom: '0.85rem' }).text('Views: ' + ((data.stats && data.stats.views) || 0) + ' | Likes: ' + ((data.stats && data.stats.likes) || 0)),
@@ -411,7 +426,7 @@ export function createStoreDetailPage() {
       padding: '1rem'
     }).child([
       el('div').text('Store Detail').css({ fontSize: '1.25rem', fontWeight: '800', color: '#0f172a', marginBottom: '0.28rem' }),
-      el('div').text('Detail project publish: kode sumber dan preview seperti di editor.').css({ color: '#334155', fontSize: '0.92rem' })
+      el('div').text('Detail project publish: deskripsi dari metadata project, kode sumber, dan preview seperti di editor.').css({ color: '#334155', fontSize: '0.92rem' })
     ]),
     el('div').link(refs, 'detailPanel').css({
       background: '#fff',

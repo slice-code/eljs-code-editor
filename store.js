@@ -67,7 +67,7 @@ export function createStorePage() {
       el(refs.storeList).empty().child(
         items.map(function(item) {
           const title = getSafeText(item.name, 'Untitled Project');
-          const description = getSafeText(item.description, 'No description');
+          const description = getSafeText(item.description, 'Tidak ada deskripsi');
           const authorName = getSafeText(item.author && item.author.name, 'Unknown');
           const views = (item.stats && item.stats.views) || 0;
           const likes = (item.stats && item.stats.likes) || 0;
@@ -107,12 +107,26 @@ export function createStorePage() {
                 overflow: 'hidden',
                 textOverflow: 'ellipsis'
               }),
-              el('div').text(description).css({
-                color: '#475569',
-                fontSize: '0.9rem',
-                minHeight: '2.8em',
-                lineHeight: '1.45'
-              }),
+              el('div').css({ marginBottom: '0.25rem' }).child([
+                el('div').text('Deskripsi').css({
+                  fontSize: '0.68rem',
+                  fontWeight: '700',
+                  color: '#94a3b8',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.06em',
+                  marginBottom: '0.2rem'
+                }),
+                el('div').text(description).css({
+                  color: '#475569',
+                  fontSize: '0.9rem',
+                  minHeight: '2.8em',
+                  lineHeight: '1.45',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 4,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden'
+                })
+              ]),
               el('div').css({
                 marginTop: '0.75rem',
                 display: 'flex',
@@ -175,7 +189,7 @@ export function createStorePage() {
       padding: '1rem'
     }).child([
       el('div').text('Store').css({ fontSize: '1.25rem', fontWeight: '800', color: '#0f172a', marginBottom: '0.28rem' }),
-      el('div').text('Temukan project publish dari creator, cari cepat, lalu lihat detailnya.').css({ color: '#334155', fontSize: '0.92rem' })
+      el('div').text('Temukan project publish dari creator — tiap kartu memuat deskripsi, thumbnail, dan statistik; cari cepat lalu buka detail.').css({ color: '#334155', fontSize: '0.92rem' })
     ]),
     el('div').css({ marginBottom: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }).child([
       el('input').link(refs, 'searchInput').attr('type', 'text').attr('placeholder', 'Cari project publish...').css({
