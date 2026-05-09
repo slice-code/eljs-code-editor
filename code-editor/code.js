@@ -696,6 +696,72 @@
     });
   }
 
+  /** Raster iframe → canvas di parent (max 1280×720 JPEG) untuk payload publish */
+  function normalizeThumbnailOnCanvas(thumbnail) {
+    return new Promise(function(resolve) {
+      if (!thumbnail || !thumbnail.data_base64) {
+        resolve(buildFallbackThumbnail());
+        return;
+      }
+      var img = new Image();
+      img.onload = function() {
+        var maxW = 1280;
+        var maxH = 720;
+        var scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        var tw = Math.max(1, Math.floor(img.width * scale));
+        var th = Math.max(1, Math.floor(img.height * scale));
+        var c = document.createElement('canvas');
+        c.width = tw;
+        c.height = th;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, tw, th);
+        ctx.drawImage(img, 0, 0, tw, th);
+        try {
+          var du = c.toDataURL('image/jpeg', 0.9);
+          var parts = du.split(',');
+          resolve({
+            mime_type: 'image/jpeg',
+            data_base64: parts[1] || '',
+            width: tw,
+            height: th
+          });
+        } catch (e2) {
+          resolve(thumbnail);
+        }
+      };
+      img.onerror = function() {
+        resolve(thumbnail);
+      };
+      img.src = 'data:' + (thumbnail.mime_type || 'image/jpeg') + ';base64,' + thumbnail.data_base64;
+    });
+  }
+
+  /** Thumbnail publish: pakai canvas modal jika sudah ada frame; kalau tidak iframe → canvas → JPEG */
+  function getThumbnailPayloadForPublish() {
+    return new Promise(function(resolve) {
+      if (livePreviewModalCanvas && livePreviewCanvasHasFrame &&
+          livePreviewModalCanvas.width > 0 && livePreviewModalCanvas.height > 0) {
+        try {
+          var dataUrl = livePreviewModalCanvas.toDataURL('image/jpeg', 0.9);
+          var b64 = dataUrl.split(',')[1];
+          if (b64) {
+            resolve({
+              mime_type: 'image/jpeg',
+              data_base64: b64,
+              width: livePreviewModalCanvas.width,
+              height: livePreviewModalCanvas.height
+            });
+            return;
+          }
+        } catch (e) {}
+      }
+      getPreviewThumbnail().then(function(thumb) {
+        return normalizeThumbnailOnCanvas(thumb);
+      }).then(resolve);
+    });
+  }
+
   function createNewProject() {
     var name = prompt('New project name:', 'New Project');
     if (!(name && name.trim())) return;
@@ -910,7 +976,7 @@
     setPublishLoadingState(true);
 
     syncProjectToApi().then(function() {
-      return getPreviewThumbnail();
+      return getThumbnailPayloadForPublish();
     }).then(function(thumbnail) {
       return apiRequest('/api/editor/projects/' + apiProjectId + '/publish', {
         method: 'POST',
@@ -2711,6 +2777,196 @@
     ifr.setAttribute('sandbox', PREVIEW_IFRAME_SANDBOX);
   }
 
+  var livePreviewModalOverlay = null;
+  var livePreviewModalCanvas = null;
+  var livePreviewModalCanvasWrap = null;
+  var livePreviewCanvasHasFrame = false;
+  var livePreviewIntervalId = null;
+  var livePreviewTickPending = false;
+  var livePreviewRequestSafetyTimer = null;
+  var LIVE_PREVIEW_POLL_MS = 380;
+  var LIVE_PREVIEW_CAPTURE_MAX = 1280;
+
+  function sizeLivePreviewCanvas() {
+    if (!livePreviewModalCanvas || !livePreviewModalCanvasWrap) return;
+    var rect = livePreviewModalCanvasWrap.getBoundingClientRect();
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = Math.floor(rect.width * dpr);
+    var h = Math.floor(rect.height * dpr);
+    if (w < 2 || h < 2) return;
+    livePreviewModalCanvas.width = w;
+    livePreviewModalCanvas.height = h;
+  }
+
+  function drawLivePreviewSnapshot(thumbnail) {
+    var canvas = livePreviewModalCanvas;
+    if (!canvas || !thumbnail || !thumbnail.data_base64) {
+      livePreviewTickPending = false;
+      if (livePreviewRequestSafetyTimer) {
+        clearTimeout(livePreviewRequestSafetyTimer);
+        livePreviewRequestSafetyTimer = null;
+      }
+      return;
+    }
+    var ctx = canvas.getContext('2d');
+    var img = new Image();
+    img.onload = function() {
+      var cw = canvas.width;
+      var ch = canvas.height;
+      ctx.fillStyle = '#111827';
+      ctx.fillRect(0, 0, cw, ch);
+      var scale = Math.min(cw / img.width, ch / img.height);
+      var w = img.width * scale;
+      var h = img.height * scale;
+      var x = (cw - w) / 2;
+      var y = (ch - h) / 2;
+      ctx.drawImage(img, x, y, w, h);
+      livePreviewCanvasHasFrame = true;
+      livePreviewTickPending = false;
+      if (livePreviewRequestSafetyTimer) {
+        clearTimeout(livePreviewRequestSafetyTimer);
+        livePreviewRequestSafetyTimer = null;
+      }
+    };
+    img.onerror = function() {
+      livePreviewTickPending = false;
+      if (livePreviewRequestSafetyTimer) {
+        clearTimeout(livePreviewRequestSafetyTimer);
+        livePreviewRequestSafetyTimer = null;
+      }
+    };
+    img.src = 'data:image/jpeg;base64,' + thumbnail.data_base64;
+  }
+
+  function requestLivePreviewCanvasFrame() {
+    if (!livePreviewModalCanvas || !livePreviewModalCanvas.isConnected) return;
+    if (livePreviewTickPending) return;
+    var iframeEl = connector.preview;
+    if (!iframeEl || !iframeEl.contentWindow) return;
+    livePreviewTickPending = true;
+    if (livePreviewRequestSafetyTimer) clearTimeout(livePreviewRequestSafetyTimer);
+    livePreviewRequestSafetyTimer = setTimeout(function() {
+      livePreviewRequestSafetyTimer = null;
+      livePreviewTickPending = false;
+    }, 6000);
+    iframeEl.contentWindow.postMessage({
+      type: '__elcode_live_canvas__',
+      maxWidth: LIVE_PREVIEW_CAPTURE_MAX,
+      maxHeight: 720
+    }, '*');
+  }
+
+  function livePreviewWindowResizeHandler() {
+    sizeLivePreviewCanvas();
+  }
+
+  function closeLivePreviewModal() {
+    if (livePreviewIntervalId !== null) {
+      clearInterval(livePreviewIntervalId);
+      livePreviewIntervalId = null;
+    }
+    if (livePreviewRequestSafetyTimer) {
+      clearTimeout(livePreviewRequestSafetyTimer);
+      livePreviewRequestSafetyTimer = null;
+    }
+    window.removeEventListener('resize', livePreviewWindowResizeHandler);
+    livePreviewTickPending = false;
+    livePreviewCanvasHasFrame = false;
+    livePreviewModalCanvas = null;
+    livePreviewModalCanvasWrap = null;
+    if (livePreviewModalOverlay && livePreviewModalOverlay.parentNode) {
+      livePreviewModalOverlay.parentNode.removeChild(livePreviewModalOverlay);
+    }
+    livePreviewModalOverlay = null;
+    document.removeEventListener('keydown', livePreviewModalEscHandler);
+  }
+
+  function livePreviewModalEscHandler(e) {
+    if (e.key === 'Escape') closeLivePreviewModal();
+  }
+
+  function showLivePreviewModal() {
+    closeLivePreviewModal();
+    var canvasRefs = {};
+    var wrapRefs = {};
+    var inner = el('div').css({
+      width: 'min(960px, 96vw)',
+      height: 'min(85vh, 900px)',
+      maxWidth: '100%',
+      maxHeight: '100%',
+      background: '#1e1e1e',
+      borderRadius: '10px',
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+      boxShadow: '0 24px 48px rgba(0,0,0,0.45)'
+    }).child([
+      el('div').css({
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '10px 14px',
+        background: '#2d2d2d',
+        borderBottom: '1px solid #444',
+        flexShrink: '0'
+      }).child([
+        el('div').text('Preview (capture iframe → canvas)').css({ color: '#eee', fontWeight: '700', fontSize: '14px' }),
+        el('button').text('Tutup').css({
+          padding: '6px 12px', background: '#444', color: '#eee', border: 'none',
+          borderRadius: '6px', cursor: 'pointer', fontSize: '12px'
+        }).click(function() { closeLivePreviewModal(); })
+      ]),
+      el('div').link(wrapRefs, 'wrap').css({
+        flex: '1',
+        minHeight: '0',
+        background: '#111',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }).child(
+        el('canvas').link(canvasRefs, 'cv').css({
+          maxWidth: '100%',
+          maxHeight: '100%',
+          width: 'auto',
+          height: 'auto',
+          display: 'block'
+        })
+      )
+    ]);
+
+    var overlayEl = el('div').css({
+      position: 'fixed',
+      left: '0',
+      top: '0',
+      right: '0',
+      bottom: '0',
+      background: 'rgba(0,0,0,0.72)',
+      zIndex: '100000',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 'clamp(12px, 3vw, 28px)',
+      boxSizing: 'border-box'
+    }).child([inner]).get();
+
+    overlayEl.addEventListener('click', function(ev) {
+      if (ev.target === overlayEl) closeLivePreviewModal();
+    });
+
+    livePreviewModalOverlay = overlayEl;
+    livePreviewModalCanvas = canvasRefs.cv;
+    livePreviewModalCanvasWrap = wrapRefs.wrap;
+    document.body.appendChild(overlayEl);
+    document.addEventListener('keydown', livePreviewModalEscHandler);
+    window.addEventListener('resize', livePreviewWindowResizeHandler);
+    requestAnimationFrame(function() {
+      sizeLivePreviewCanvas();
+      requestLivePreviewCanvasFrame();
+      livePreviewIntervalId = setInterval(requestLivePreviewCanvasFrame, LIVE_PREVIEW_POLL_MS);
+    });
+  }
+
   function killAndRecreateIframe() {
     var iframeEl = connector.preview;
     var parent = iframeEl.parentElement;
@@ -2854,11 +3110,24 @@
         + '  return { mime_type: "image/jpeg", data_base64: dataUrl.split(",")[1] || "", width: targetW, height: targetH };\n'
         + '}\n'
         + 'window.addEventListener("message", function(evt) {\n'
-        + '  if (!evt || !evt.data || evt.data.type !== "__elcode_capture_thumbnail__") return;\n'
+        + '  if (!evt || !evt.data) return;\n'
+        + '  var t = evt.data.type;\n'
+        + '  if (t !== "__elcode_capture_thumbnail__" && t !== "__elcode_live_canvas__") return;\n'
         + '  __elcode_make_thumbnail__(evt.data.maxWidth, evt.data.maxHeight)\n'
-        + '    .then(function(thumbnail) { window.parent.postMessage({ type: "__elcode_thumbnail__", ok: true, thumbnail: thumbnail }, "*"); })\n'
+        + '    .then(function(thumbnail) {\n'
+        + '      if (t === "__elcode_live_canvas__") {\n'
+        + '        window.parent.postMessage({ type: "__elcode_live_canvas_done__", ok: true, thumbnail: thumbnail }, "*");\n'
+        + '      } else {\n'
+        + '        window.parent.postMessage({ type: "__elcode_thumbnail__", ok: true, thumbnail: thumbnail }, "*");\n'
+        + '      }\n'
+        + '    })\n'
         + '    .catch(function(err) {\n'
-        + '      window.parent.postMessage({ type: "__elcode_thumbnail__", ok: false, error: String(err && err.message ? err.message : err) }, "*");\n'
+        + '      var errStr = String(err && err.message ? err.message : err);\n'
+        + '      if (t === "__elcode_live_canvas__") {\n'
+        + '        window.parent.postMessage({ type: "__elcode_live_canvas_done__", ok: false, error: errStr }, "*");\n'
+        + '      } else {\n'
+        + '        window.parent.postMessage({ type: "__elcode_thumbnail__", ok: false, error: errStr }, "*");\n'
+        + '      }\n'
         + '    });\n'
         + '});\n'
         + '</' + 'script>\n';
@@ -2932,6 +3201,24 @@
           resolveThumbnail(e.data.thumbnail);
         } else {
           resolveThumbnail(buildFallbackThumbnail());
+        }
+      }
+    } else if (e.data.type === '__elcode_live_canvas_done__') {
+      if (!livePreviewModalCanvas || !livePreviewModalCanvas.isConnected) {
+        livePreviewTickPending = false;
+        if (livePreviewRequestSafetyTimer) {
+          clearTimeout(livePreviewRequestSafetyTimer);
+          livePreviewRequestSafetyTimer = null;
+        }
+        return;
+      }
+      if (e.data.ok && e.data.thumbnail && e.data.thumbnail.data_base64) {
+        drawLivePreviewSnapshot(e.data.thumbnail);
+      } else {
+        livePreviewTickPending = false;
+        if (livePreviewRequestSafetyTimer) {
+          clearTimeout(livePreviewRequestSafetyTimer);
+          livePreviewRequestSafetyTimer = null;
         }
       }
     }
@@ -3139,6 +3426,7 @@
         createHeaderDropdown('Tools', '#555', [
           { label: 'Settings', onClick: function() { showSettingsDialog(); } },
           { label: 'AI Chat', onClick: function() { showChatDialog(); } },
+          { label: 'Preview (canvas)', onClick: function() { showLivePreviewModal(); } },
         ]),
         createHeaderDropdown('Account', '#0ea5e9', [
           { label: 'Login', linkName: 'authActionBtn', onClick: function() {
@@ -3263,9 +3551,55 @@
           borderRadius: '2px'
         })
       ]),
-      el('iframe').link(connector, 'preview').attr('sandbox', PREVIEW_IFRAME_SANDBOX).width('450px').class('elcode-editor').css({
-        backgroundColor: '#fff',
-      }),
+      el('div').link(connector, 'previewWrap').class('elcode-editor').css({
+        display: 'flex',
+        flexDirection: 'column',
+        width: '450px',
+        minWidth: '180px',
+        flexShrink: '0',
+        height: '100%',
+        backgroundColor: '#1a1a1a',
+        borderLeft: '1px solid #3c3c3c'
+      }).child([
+        el('div').css({
+          height: '28px',
+          flexShrink: '0',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 8px',
+          backgroundColor: '#252526',
+          borderBottom: '1px solid #333',
+          fontSize: '11px',
+          userSelect: 'none'
+        }).child([
+          el('span').text('Preview').css({ fontWeight: 'bold', color: '#bbb', fontFamily: 'sans-serif' }),
+          el('button').text('Canvas').css({
+            padding: '3px 10px',
+            background: '#0ea5e9',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '11px',
+            fontWeight: '600',
+            fontFamily: 'sans-serif'
+          }).hover(
+            function() { this.style.background = '#38bdf8'; },
+            function() { this.style.background = '#0ea5e9'; }
+          ).click(function(e) {
+            e.stopPropagation();
+            showLivePreviewModal();
+          })
+        ]),
+        el('iframe').link(connector, 'preview').attr('sandbox', PREVIEW_IFRAME_SANDBOX).css({
+          flex: '1',
+          minHeight: '0',
+          width: '100%',
+          border: 'none',
+          backgroundColor: '#fff'
+        })
+      ]),
     ]),
   ]).load(async function(){
     // area for initialization code
@@ -3597,7 +3931,7 @@
       var maxWidth = rect.width - 506;
       if (maxWidth < 200) maxWidth = 200;
       if (newWidth > maxWidth) newWidth = maxWidth;
-      if (connector.preview) connector.preview.style.width = newWidth + 'px';
+      if (connector.previewWrap) connector.previewWrap.style.width = newWidth + 'px';
     }
 
     function stopHDrag() {
