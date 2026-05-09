@@ -1,4 +1,4 @@
-const CACHE_NAME = 'eljs-cache-v20';
+const CACHE_NAME = 'eljs-cache-v21';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
