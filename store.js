@@ -1,6 +1,7 @@
-export function createStorePage() {
+export function createStorePage(options = {}) {
   const refs = {};
   let selectedSlug = null;
+  const detailOnly = !!options.detailOnly;
 
   function getStoreSlugFromLocation() {
     const hash = window.location.hash || '';
@@ -235,7 +236,35 @@ export function createStorePage() {
     }
   }
 
-  const page = el('div').css({
+  const detailLayout = el('div').css({
+    maxWidth: '920px',
+    margin: '0 auto',
+    padding: '1.15rem',
+    fontFamily: 'Roboto, sans-serif'
+  }).child([
+    el('div').css({
+      marginBottom: '1rem',
+      border: '1px solid #dbeafe',
+      borderRadius: '0.95rem',
+      background: 'linear-gradient(135deg, #dbeafe 0%, #eff6ff 60%, #f8fafc 100%)',
+      padding: '1rem'
+    }).child([
+      el('div').text('Store Detail').css({ fontSize: '1.25rem', fontWeight: '800', color: '#0f172a', marginBottom: '0.28rem' }),
+      el('div').text('Detail project publish dari Store.').css({ color: '#334155', fontSize: '0.92rem' })
+    ]),
+    el('div').link(refs, 'detailPanel').css({
+      background: '#fff',
+      border: '1px solid #e5e7eb',
+      borderRadius: '0.95rem',
+      padding: '1rem',
+      minHeight: '300px',
+      boxShadow: '0 10px 28px rgba(15,23,42,0.06)'
+    }).child(
+      el('div').text('Memuat detail project...').css({ color: '#64748b' })
+    )
+  ]);
+
+  const listLayout = el('div').css({
     maxWidth: '1240px',
     margin: '0 auto',
     padding: '1.15rem',
@@ -298,7 +327,12 @@ export function createStorePage() {
     ])
   ]);
 
-  setTimeout(function() { loadStoreList(''); }, 20);
+  const page = detailOnly ? detailLayout : listLayout;
+
+  if (!detailOnly) {
+    setTimeout(function() { loadStoreList(''); }, 20);
+  }
+
   openRequestedDetailIfAny();
   window.addEventListener('elcode:store-open-detail', function(e) {
     const slug = e && e.detail && e.detail.slug ? String(e.detail.slug) : '';
@@ -306,5 +340,11 @@ export function createStorePage() {
     selectedSlug = slug;
     loadStoreDetail(slug);
   });
+
+  if (detailOnly && !selectedSlug && !getStoreSlugFromLocation()) {
+    el(refs.detailPanel).empty().child(
+      el('div').text('Slug detail tidak ditemukan. Buka dari halaman Store.').css({ color: '#dc2626' })
+    ).get();
+  }
   return page;
 }

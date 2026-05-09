@@ -902,7 +902,7 @@
         appendLog('error', ['Slug project tidak tersedia untuk detail.']);
         return;
       }
-      var detailUrl = window.location.pathname + '#/store?slug=' + encodeURIComponent(slug);
+      var detailUrl = window.location.pathname + '#/store-detail?slug=' + encodeURIComponent(slug);
       window.open(detailUrl, '_blank');
     }
 
