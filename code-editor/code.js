@@ -24,6 +24,55 @@
   var isPublishing = false;
   var headerDropdownMenus = [];
   var __editorStoreImportDebounce = null;
+
+  /** Riwayat path hash virtual di iframe pratinjau (postMessage), bukan URL induk. */
+  var previewHashNavStack = [];
+  var previewHashNavIndex = -1;
+
+  /** Depth overlay loader async (editor boot, load project, impor store). */
+  var __elcodeAsyncLoaderDepth = 0;
+
+  function ensureElcodeAsyncLoaderStyle() {
+    if (document.querySelector('style[data-elcode-async-loader]')) return;
+    var st = document.createElement('style');
+    st.setAttribute('data-elcode-async-loader', 'true');
+    st.textContent = '@keyframes elcode-async-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
+  }
+
+  function pushElcodeAsyncLoader(message) {
+    __elcodeAsyncLoaderDepth++;
+    if (__elcodeAsyncLoaderDepth > 1) return;
+    ensureElcodeAsyncLoaderStyle();
+    var overlay = document.createElement('div');
+    overlay.id = 'elcode-async-loader';
+    overlay.setAttribute('role', 'status');
+    overlay.setAttribute('aria-busy', 'true');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:200000;background:rgba(15,23,42,0.58);' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-family:system-ui,sans-serif;';
+    var spin = document.createElement('div');
+    spin.style.cssText =
+      'width:44px;height:44px;border:4px solid #334155;border-top-color:#38bdf8;border-radius:50%;' +
+      'animation:elcode-async-spin 0.8s linear infinite';
+    var label = document.createElement('div');
+    label.style.cssText = 'color:#e2e8f0;font-size:15px;font-weight:600;text-align:center;max-width:90vw';
+    label.textContent = message || 'Memuat…';
+    overlay.appendChild(spin);
+    overlay.appendChild(label);
+    document.body.appendChild(overlay);
+  }
+
+  function popElcodeAsyncLoader() {
+    __elcodeAsyncLoaderDepth = Math.max(0, __elcodeAsyncLoaderDepth - 1);
+    if (__elcodeAsyncLoaderDepth > 0) return;
+    var n = document.getElementById('elcode-async-loader');
+    if (n) {
+      try {
+        n.remove();
+      } catch (eR) {}
+    }
+  }
   
   // Per-file sessions to maintain separate undo/redo history
   var fileSessions = {};
@@ -223,6 +272,18 @@
     });
   }
 
+  /** Batalkan debounce auto-save; simpan isi editor ke file aktif di project saat ini (untuk ganti file / ganti project). */
+  function flushPendingEditorSave() {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    if (!editor || !currentFile || isLoadingFile) return Promise.resolve();
+    return saveFile(currentFile, editor.getValue()).then(function() {
+      return saveProject();
+    });
+  }
+
   function slugifyLocalProjectName() {
     return String(currentProject || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
@@ -233,49 +294,87 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
+  /** Timestamp ubah project dari respons API (ms), untuk bandingkan dengan updatedAt lokal. */
+  function parseRemoteProjectUpdatedMs(data) {
+    var d = data || {};
+    var v =
+      d.updated_at != null ? d.updated_at :
+      d.updatedAt != null ? d.updatedAt :
+      d.modified_at != null ? d.modified_at :
+      d.client_updated_at != null ? d.client_updated_at :
+      null;
+    if (v == null) return null;
+    if (typeof v === 'number' && !isNaN(v)) return v;
+    var t = new Date(v).getTime();
+    return isNaN(t) ? null : t;
+  }
+
+  /** Terapkan isi `data` (GET project) ke IndexedDB proyek saat ini. */
+  function applyRemoteProjectDataToLocal(data) {
+    var files = Array.isArray(data.files) ? data.files : [];
+    if (files.length === 0) {
+      appendLog('warn', ['Sinkron server: API mengembalikan 0 file — lewati agar project lokal tidak dikosongkan.']);
+      return Promise.resolve(false);
+    }
+    var remoteName = String(data.name != null ? data.name : '').trim();
+    var remoteDescription = String(data.description != null ? data.description : '').trim();
+    var publishedSlug = String(data.slug || data.published_slug || '').trim();
+    if (!publishedSlug && data.published_url) {
+      publishedSlug = extractPublishedSlugFromUrl(data.published_url);
+    }
+    var serverNames = {};
+    files.forEach(function(f) {
+      if (f && f.name) serverNames[String(f.name).trim()] = true;
+    });
+    return listFiles().then(function(localNames) {
+      var deletes = localNames.filter(function(n) { return !serverNames[n]; });
+      return Promise.all(deletes.map(function(n) { return deleteFile(n); }));
+    }).then(function() {
+      return Promise.all(files.map(function(f) {
+        var fn = (f && f.name) ? String(f.name).trim() : '';
+        if (!fn) return Promise.resolve();
+        var content = f && typeof f.content === 'string' ? f.content : '';
+        return saveFile(fn, content);
+      }));
+    }).then(function() {
+      return saveProject({
+        apiProjectId: apiProjectId,
+        remoteName: remoteName || null,
+        remoteDescription: remoteDescription,
+        publishedSlug: publishedSlug || null
+      });
+    }).then(function() {
+      appendLog('info', ['Disinkronkan dengan server (' + files.length + ' file).']);
+      return true;
+    });
+  }
+
   /**
-   * Tarik file + metadata server ke IndexedDB (sinkron dengan My Published / project remote).
+   * Tarik file + metadata server ke IndexedDB.
+   * @param {{ onlyIfRemoteNewer?: boolean }} options — jika true: hanya timpa lokal bila timestamp server lebih baru dari record project lokal (mencegah reload menghapus editan yang belum di-push).
    */
-  function syncRemoteProjectIntoLocal() {
+  function syncRemoteProjectIntoLocal(options) {
+    options = options || {};
+    var onlyIfRemoteNewer = !!options.onlyIfRemoteNewer;
     if (!apiProjectId || !authUser) return Promise.resolve(false);
     return apiRequest('/api/editor/projects/' + apiProjectId, { method: 'GET' }).then(function(resp) {
       var data = resp.data || {};
-      var files = Array.isArray(data.files) ? data.files : [];
-      if (files.length === 0) {
-        appendLog('warn', ['Sinkron server: API mengembalikan 0 file — lewati agar project lokal tidak dikosongkan.']);
-        return false;
-      }
-      var remoteName = String(data.name != null ? data.name : '').trim();
-      var remoteDescription = String(data.description != null ? data.description : '').trim();
-      var publishedSlug = String(data.slug || data.published_slug || '').trim();
-      if (!publishedSlug && data.published_url) {
-        publishedSlug = extractPublishedSlugFromUrl(data.published_url);
-      }
-      var serverNames = {};
-      files.forEach(function(f) {
-        if (f && f.name) serverNames[String(f.name).trim()] = true;
-      });
-      return listFiles().then(function(localNames) {
-        var deletes = localNames.filter(function(n) { return !serverNames[n]; });
-        return Promise.all(deletes.map(function(n) { return deleteFile(n); }));
-      }).then(function() {
-        return Promise.all(files.map(function(f) {
-          var fn = (f && f.name) ? String(f.name).trim() : '';
-          if (!fn) return Promise.resolve();
-          var content = f && typeof f.content === 'string' ? f.content : '';
-          return saveFile(fn, content);
-        }));
-      }).then(function() {
-        return saveProject({
-          apiProjectId: apiProjectId,
-          remoteName: remoteName || null,
-          remoteDescription: remoteDescription,
-          publishedSlug: publishedSlug || null
+      if (onlyIfRemoteNewer) {
+        var remoteMs = parseRemoteProjectUpdatedMs(data);
+        if (remoteMs == null) {
+          appendLog('info', ['Sinkron tarik server dilewati: API tidak mengirim waktu ubah; memakai file lokal.']);
+          return false;
+        }
+        return getProjectRecord(currentProject).then(function(localRec) {
+          var localMs = localRec && localRec.updatedAt ? Number(localRec.updatedAt) : 0;
+          if (remoteMs <= localMs) {
+            appendLog('info', ['Sinkron tarik server dilewati: salinan lokal lebih baru atau sama.']);
+            return false;
+          }
+          return applyRemoteProjectDataToLocal(data);
         });
-      }).then(function() {
-        appendLog('info', ['Disinkronkan dengan server (' + files.length + ' file).']);
-        return true;
-      });
+      }
+      return applyRemoteProjectDataToLocal(data);
     }).catch(function(err) {
       appendLog('warn', ['Sinkron server dilewati: ' + (err.message || err)]);
       return false;
@@ -315,45 +414,59 @@
 
   function loadProject(name) {
     console.log('[loadProject] Loading project:', name);
-    currentProject = name;
-    localStorage.setItem('elcode-lastProject', name);
-    connector.projectName.textContent = name;
-    currentFile = null;
-    isLoadingFile = true;
-    editor.setValue('', -1);
+    pushElcodeAsyncLoader('Memuat project…');
+    flushPendingEditorSave()
+      .catch(function(errFlush) {
+        console.warn('[loadProject] Flush sebelum ganti project:', errFlush);
+      })
+      .then(function() {
+        currentProject = name;
+        localStorage.setItem('elcode-lastProject', name);
+        connector.projectName.textContent = name;
+        currentFile = null;
+        isLoadingFile = true;
+        editor.setValue('', -1);
 
-    fileSessions = {};
-    console.log('[loadProject] Cleared file sessions');
+        fileSessions = {};
+        console.log('[loadProject] Cleared file sessions');
 
-    getProjectRecord(name).then(function(rec) {
-      apiProjectId = rec && rec.apiProjectId ? rec.apiProjectId : null;
-      return listFiles();
-    }).then(function(files) {
-      var syncP = Promise.resolve(false);
-      if (authUser && apiProjectId) {
-        syncP = syncRemoteProjectIntoLocal();
-      }
-      return syncP.then(function() { return listFiles(); });
-    }).then(function(files) {
-      refreshFileList();
-      if (files.indexOf('main.js') !== -1) {
-        console.log('[loadProject] Opening main.js');
-        openFile('main.js');
-      } else if (files.length > 0) {
-        console.log('[loadProject] Opening first file:', files[0]);
-        openFile(files[0]);
-      } else {
-        console.log('[loadProject] No files in project');
+        return getProjectRecord(name);
+      })
+      .then(function(rec) {
+        apiProjectId = rec && rec.apiProjectId ? rec.apiProjectId : null;
+        return listFiles();
+      })
+      .then(function(files) {
+        var syncP = Promise.resolve(false);
+        if (authUser && apiProjectId) {
+          syncP = syncRemoteProjectIntoLocal({ onlyIfRemoteNewer: true });
+        }
+        return syncP.then(function() { return listFiles(); });
+      })
+      .then(function(files) {
+        refreshFileList();
+        if (files.indexOf('main.js') !== -1) {
+          console.log('[loadProject] Opening main.js');
+          openFile('main.js');
+        } else if (files.length > 0) {
+          console.log('[loadProject] Opening first file:', files[0]);
+          openFile(files[0]);
+        } else {
+          console.log('[loadProject] No files in project');
+          isLoadingFile = false;
+        }
+        setTimeout(function() {
+          console.log('[loadProject] Running preview');
+          runPreview();
+        }, 300);
+      })
+      .catch(function(err) {
+        console.error('[loadProject] Failed to list files:', err);
         isLoadingFile = false;
-      }
-      setTimeout(function() {
-        console.log('[loadProject] Running preview');
-        runPreview();
-      }, 300);
-    }).catch(function(err) {
-      console.error('[loadProject] Failed to list files:', err);
-      isLoadingFile = false;
-    });
+      })
+      .finally(function() {
+        popElcodeAsyncLoader();
+      });
   }
 
   function renameProject(oldName, newName) {
@@ -884,20 +997,25 @@
     var name = prompt('New project name:', 'New Project');
     if (!(name && name.trim())) return;
     console.log('[New Project] Creating project:', name.trim());
-    currentProject = name.trim();
-    apiProjectId = null;
-    localStorage.setItem('elcode-lastProject', currentProject);
-    connector.projectName.textContent = currentProject;
+    flushPendingEditorSave()
+      .catch(function(errF) {
+        console.warn('[New Project] Flush sebelum project baru:', errF);
+      })
+      .then(function() {
+        currentProject = name.trim();
+        apiProjectId = null;
+        localStorage.setItem('elcode-lastProject', currentProject);
+        connector.projectName.textContent = currentProject;
 
-    // Clear state for new project
-    currentFile = null;
-    fileSessions = {};
-    isLoadingFile = true;
-    editor.setValue('', -1);
-    console.log('[New Project] Cleared editor state');
+        // Clear state for new project
+        currentFile = null;
+        fileSessions = {};
+        isLoadingFile = true;
+        editor.setValue('', -1);
+        console.log('[New Project] Cleared editor state');
 
-    // Save main.js with default template
-    var defaultTemplate = "// ============================================\n"
+        // Save main.js with default template
+        var defaultTemplate = "// ============================================\n"
       + "// el.js Editor - Getting Started\n"
       + "// ============================================\n"
       + "// el.js is a lightweight DOM builder. Create elements with `el(tag)`,\n"
@@ -958,6 +1076,7 @@
       isLoadingFile = false;
       appendLog('error', ['Failed to create new project: ' + (err.message || err)]);
     });
+      });
   }
 
   /** Baca slug impor dari session / query lalu hapus session agar tidak ter-import ulang. */
@@ -999,14 +1118,20 @@
     if (!editor) return Promise.resolve();
     var intent = consumeEditorStoreImportIntent();
     if (!intent.slug) return Promise.resolve();
-    return importStoreProjectFromSlug(intent.slug, { fromMyPublish: intent.fromMyPublish }).then(function() {
-      try {
-        var pathOnly = (window.location.pathname || '') + (window.location.hash || '').split('?')[0];
-        window.history.replaceState({}, '', pathOnly);
-      } catch (e2) {}
-    }).catch(function(err) {
-      appendLog('error', ['Impor project store gagal: ' + (err && err.message ? err.message : err)]);
-    });
+    pushElcodeAsyncLoader('Membuka dari Store…');
+    return importStoreProjectFromSlug(intent.slug, { fromMyPublish: intent.fromMyPublish })
+      .then(function() {
+        try {
+          var pathOnly = (window.location.pathname || '') + (window.location.hash || '').split('?')[0];
+          window.history.replaceState({}, '', pathOnly);
+        } catch (e2) {}
+      })
+      .catch(function(err) {
+        appendLog('error', ['Impor project store gagal: ' + (err && err.message ? err.message : err)]);
+      })
+      .finally(function() {
+        popElcodeAsyncLoader();
+      });
   }
 
   function scheduleEditorStoreImport() {
@@ -1047,47 +1172,53 @@
       });
 
       function applyImportToProjectName(finalName) {
-        currentProject = finalName;
-        var pid = data.project_id ? String(data.project_id).trim() : '';
-        apiProjectId = pid || null;
-        localStorage.setItem('elcode-lastProject', currentProject);
-        connector.projectName.textContent = currentProject;
+        return flushPendingEditorSave()
+          .catch(function(errI) {
+            console.warn('[importStore] Flush sebelum impor:', errI);
+          })
+          .then(function() {
+            currentProject = finalName;
+            var pid = data.project_id ? String(data.project_id).trim() : '';
+            apiProjectId = pid || null;
+            localStorage.setItem('elcode-lastProject', currentProject);
+            connector.projectName.textContent = currentProject;
 
-        currentFile = null;
-        fileSessions = {};
-        isLoadingFile = true;
-        editor.setValue('', -1);
+            currentFile = null;
+            fileSessions = {};
+            isLoadingFile = true;
+            editor.setValue('', -1);
 
-        var saveOps = filePayload.map(function(file) {
-          return saveFile(file.name, file.content);
-        });
+            var saveOps = filePayload.map(function(file) {
+              return saveFile(file.name, file.content);
+            });
 
-        var publishedSlug = String(data.slug || '').trim();
-        if (!publishedSlug && data.published_url) {
-          publishedSlug = extractPublishedSlugFromUrl(data.published_url);
-        }
+            var publishedSlug = String(data.slug || '').trim();
+            if (!publishedSlug && data.published_url) {
+              publishedSlug = extractPublishedSlugFromUrl(data.published_url);
+            }
 
-        return Promise.all(saveOps).then(function() {
-          return saveProject({
-            apiProjectId: pid ? pid : null,
-            remoteName: String(data.name || '').trim() || undefined,
-            remoteDescription: String(data.description != null ? data.description : '').trim(),
-            publishedSlug: publishedSlug || undefined
+            return Promise.all(saveOps).then(function() {
+              return saveProject({
+                apiProjectId: pid ? pid : null,
+                remoteName: String(data.name || '').trim() || undefined,
+                remoteDescription: String(data.description != null ? data.description : '').trim(),
+                publishedSlug: publishedSlug || undefined
+              });
+            }).then(function() {
+              refreshFileList();
+              var target = 'main.js';
+              var hasMain = filePayload.some(function(f) { return f.name === 'main.js'; });
+              if (!hasMain) target = filePayload[0].name;
+              openFile(target);
+              setTimeout(function() { runPreview(); }, 350);
+              if (fromMyPublish) {
+                appendLog('info', ['Publish dibuka di editor (nama project disamakan; project lokal lama diganti jika ada): "' + currentProject + '".']);
+              } else {
+                appendLog('info', ['Project store berhasil dibuka di editor: "' + currentProject + '".']);
+              }
+              return true;
+            });
           });
-        }).then(function() {
-          refreshFileList();
-          var target = 'main.js';
-          var hasMain = filePayload.some(function(f) { return f.name === 'main.js'; });
-          if (!hasMain) target = filePayload[0].name;
-          openFile(target);
-          setTimeout(function() { runPreview(); }, 350);
-          if (fromMyPublish) {
-            appendLog('info', ['Publish dibuka di editor (nama project disamakan; project lokal lama diganti jika ada): "' + currentProject + '".']);
-          } else {
-            appendLog('info', ['Project store berhasil dibuka di editor: "' + currentProject + '".']);
-          }
-          return true;
-        });
       }
 
       return listProjects().then(function(projects) {
@@ -2938,43 +3069,47 @@
   }
 
   function openFile(name) {
-    currentFile = name;
-    isLoadingFile = true;
-    
-    loadFile(name).then(function(content) {
-      console.log('[openFile] Loading file:', name, 'Content length:', content ? content.length : 0);
-      
-      // Check if we have an existing session for this file
-      if (fileSessions[name]) {
-        // Switch to existing session (preserves undo/redo history)
-        console.log('[openFile] Using cached session for:', name);
-        editor.setSession(fileSessions[name]);
-      } else {
-        // Create new session for this file
-        var ext = name.split('.').pop();
-        var modeMap = { js: 'ace/mode/javascript', html: 'ace/mode/html', css: 'ace/mode/css', json: 'ace/mode/json', ts: 'ace/mode/typescript' };
-        var AceSession = ace.require('ace/edit_session').EditSession;
-        var UndoManager = ace.require('ace/undomanager').UndoManager;
-        var session = new AceSession(content || '', modeMap[ext] || 'ace/mode/javascript');
-        session.setUndoManager(new UndoManager());
-        
-        // Set tab size and other session settings
-        session.setTabSize(2);
-        session.setUseSoftTabs(true);
-        
-        fileSessions[name] = session;
-        editor.setSession(session);
-        console.log('[openFile] Created new session for:', name);
-      }
-      
-      editor.moveCursorTo(0, 0);
-      isLoadingFile = false;
-      console.log('[openFile] File loaded successfully:', name);
-      refreshFileList();
-    }).catch(function(err) {
-      console.error('[openFile] Failed to load file:', name, err);
-      isLoadingFile = false;
-    });
+    if (currentFile === name) return;
+
+    flushPendingEditorSave()
+      .catch(function(errFlush) {
+        console.warn('[openFile] Flush sebelum ganti file:', errFlush);
+      })
+      .then(function() {
+        currentFile = name;
+        isLoadingFile = true;
+
+        return loadFile(name).then(function(content) {
+          console.log('[openFile] Loading file:', name, 'Content length:', content ? content.length : 0);
+
+          if (fileSessions[name]) {
+            console.log('[openFile] Using cached session for:', name);
+            editor.setSession(fileSessions[name]);
+          } else {
+            var ext = name.split('.').pop();
+            var modeMap = { js: 'ace/mode/javascript', html: 'ace/mode/html', css: 'ace/mode/css', json: 'ace/mode/json', ts: 'ace/mode/typescript' };
+            var AceSession = ace.require('ace/edit_session').EditSession;
+            var UndoManager = ace.require('ace/undomanager').UndoManager;
+            var session = new AceSession(content || '', modeMap[ext] || 'ace/mode/javascript');
+            session.setUndoManager(new UndoManager());
+
+            session.setTabSize(2);
+            session.setUseSoftTabs(true);
+
+            fileSessions[name] = session;
+            editor.setSession(session);
+            console.log('[openFile] Created new session for:', name);
+          }
+
+          editor.moveCursorTo(0, 0);
+          isLoadingFile = false;
+          console.log('[openFile] File loaded successfully:', name);
+          refreshFileList();
+        }).catch(function(err) {
+          console.error('[openFile] Failed to load file:', name, err);
+          isLoadingFile = false;
+        });
+      });
   }
 
   // ===== Custom Dialog for iframe preview =====
@@ -3160,6 +3295,117 @@
 
   function livePreviewModalEscHandler(e) {
     if (e.key === 'Escape') closeLivePreviewModal();
+  }
+
+  /** Layar penuh untuk panel pratinjau live (bukan modal canvas). */
+  function toggleLivePreviewChromeFullscreen() {
+    var root = connector.previewChromeRoot;
+    if (!root) return;
+    var doc = document;
+    var cur = doc.fullscreenElement || doc.webkitFullscreenElement || doc.mozFullScreenElement;
+    if (cur === root) {
+      if (doc.exitFullscreen) doc.exitFullscreen();
+      else if (doc.webkitExitFullscreen) doc.webkitExitFullscreen();
+      else if (doc.mozCancelFullScreen) doc.mozCancelFullScreen();
+    } else {
+      var req = root.requestFullscreen || root.webkitRequestFullscreen || root.mozRequestFullScreen;
+      if (req) {
+        req.call(root).catch(function() {});
+      }
+    }
+  }
+
+  /** Normalisasi input path untuk hash SPA (tanpa # di depan). */
+  function normalizePreviewHashPath(raw) {
+    var s = String(raw || '').trim().replace(/^#+/, '');
+    if (!s.startsWith('/')) s = '/' + s;
+    return s;
+  }
+
+  /** Bangun fragmen hash (#/path) untuk iframe pratinjau. */
+  function previewHashPathToFragment(path) {
+    var p = normalizePreviewHashPath(path);
+    return '#' + p;
+  }
+
+  /** Terapkan hash di dokumen iframe pratinjau (pushState + hashchange), tanpa mengubah URL induk. */
+  function postPreviewIframeHash(path) {
+    var frag = previewHashPathToFragment(path);
+    var iframeEl = connector.preview;
+    if (!iframeEl || !iframeEl.contentWindow) return;
+    try {
+      iframeEl.contentWindow.postMessage({ type: '__elcode_preview_apply_hash__', hash: frag }, '*');
+    } catch (ePost) {}
+  }
+
+  /** Catat path baru di riwayat pratinjau lalu kirim hash ke iframe (slice maju yang dibuang). */
+  function previewHashNavRecordNewAndNavigate(path) {
+    var p = normalizePreviewHashPath(path);
+    if (previewHashNavStack.length === 0) {
+      previewHashNavStack = ['/'];
+      previewHashNavIndex = 0;
+    }
+    previewHashNavStack = previewHashNavStack.slice(0, previewHashNavIndex + 1);
+    if (previewHashNavStack[previewHashNavStack.length - 1] !== p) {
+      previewHashNavStack.push(p);
+      previewHashNavIndex = previewHashNavStack.length - 1;
+    }
+    postPreviewIframeHash(p);
+    syncPreviewHashNavChrome();
+  }
+
+  function previewHashNavBack() {
+    if (previewHashNavIndex <= 0) return;
+    previewHashNavIndex--;
+    postPreviewIframeHash(previewHashNavStack[previewHashNavIndex]);
+    syncPreviewHashNavChrome();
+  }
+
+  function previewHashNavForward() {
+    if (previewHashNavIndex < 0 || previewHashNavIndex >= previewHashNavStack.length - 1) return;
+    previewHashNavIndex++;
+    postPreviewIframeHash(previewHashNavStack[previewHashNavIndex]);
+    syncPreviewHashNavChrome();
+  }
+
+  /** Sinkronkan field path dan tombol Mundur/Maju dengan riwayat hash iframe pratinjau (bukan URL induk). */
+  function syncPreviewHashNavChrome() {
+    var path = '/';
+    if (previewHashNavIndex >= 0 && previewHashNavStack.length > 0 && previewHashNavIndex < previewHashNavStack.length) {
+      path = previewHashNavStack[previewHashNavIndex];
+    }
+    var inp = connector.previewRouteInput;
+    if (inp) inp.value = path;
+    var canBack = previewHashNavIndex > 0;
+    var canFwd =
+      previewHashNavIndex >= 0 &&
+      previewHashNavStack.length > 0 &&
+      previewHashNavIndex < previewHashNavStack.length - 1;
+    var b = connector.previewHashNavBackBtn;
+    var f = connector.previewHashNavForwardBtn;
+    if (b) {
+      b.disabled = !canBack;
+      b.style.opacity = canBack ? '1' : '0.4';
+      b.style.cursor = canBack ? 'pointer' : 'not-allowed';
+    }
+    if (f) {
+      f.disabled = !canFwd;
+      f.style.opacity = canFwd ? '1' : '0.4';
+      f.style.cursor = canFwd ? 'pointer' : 'not-allowed';
+    }
+  }
+
+  /** Input path SPA di bar pratinjau → hash virtual di iframe (#/path). */
+  function navigateSpaFromPreviewRouteInput() {
+    var inp = connector.previewRouteInput;
+    if (!inp) return;
+    var raw = String(inp.value || '').trim();
+    if (!raw) return;
+    var path = normalizePreviewHashPath(raw);
+    previewHashNavRecordNewAndNavigate(path);
+    try {
+      inp.blur();
+    } catch (b) {}
   }
 
   function showLivePreviewModal() {
@@ -3444,6 +3690,38 @@
         + 'window.addEventListener("message", function(evt) {\n'
         + '  if (!evt || !evt.data) return;\n'
         + '  var t = evt.data.type;\n'
+        + '  if (t === "__elcode_preview_apply_hash__") {\n'
+        + '    var __h = String(evt.data.hash || "#/").trim();\n'
+        + '    if (!__h.startsWith("#")) __h = "#" + __h;\n'
+        + '    if (String(window.location.hash || "") === __h) {\n'
+        + '      return;\n'
+        + '    }\n'
+        + '    var __run = function() {\n'
+        + '      try {\n'
+        + '        if (window.history && window.history.replaceState) {\n'
+        + '          window.history.replaceState({ __elcodePreviewHash: 1 }, "", "about:srcdoc" + __h);\n'
+        + '        }\n'
+        + '      } catch (_r1) {}\n'
+        + '      try {\n'
+        + '        if (String(window.location.hash || "") !== __h) {\n'
+        + '          window.location.hash = __h;\n'
+        + '        }\n'
+        + '      } catch (_r2) {}\n'
+        + '      if (String(window.location.hash || "") !== __h) {\n'
+        + '        try {\n'
+        + '          window.dispatchEvent(new HashChangeEvent("hashchange"));\n'
+        + '        } catch (_ph2) {\n'
+        + '          try { window.dispatchEvent(new Event("hashchange")); } catch (_ph3) {}\n'
+        + '        }\n'
+        + '      }\n'
+        + '    };\n'
+        + '    if (typeof queueMicrotask === "function") {\n'
+        + '      queueMicrotask(__run);\n'
+        + '    } else {\n'
+        + '      Promise.resolve().then(__run);\n'
+        + '    }\n'
+        + '    return;\n'
+        + '  }\n'
         + '  if (t !== "__elcode_capture_thumbnail__" && t !== "__elcode_live_canvas__") return;\n'
         + '  __elcode_make_thumbnail__(evt.data.maxWidth, evt.data.maxHeight)\n'
         + '    .then(function(thumbnail) {\n'
@@ -3490,6 +3768,9 @@
   
       // Load into sandboxed iframe - kill and recreate to force reload
       killAndRecreateIframe();
+      previewHashNavStack = ['/'];
+      previewHashNavIndex = 0;
+      syncPreviewHashNavChrome();
       var iframeEl = connector.preview;
       setPreviewIframeSandbox(iframeEl);
       iframeEl.style.background = '#fff';
@@ -3513,11 +3794,19 @@
     if (!e.data || !e.data.type) {
       if (e.data === '__elcode_done__') {
         if (previewTimeout) { clearTimeout(previewTimeout); previewTimeout = null; }
+        previewHashNavStack = ['/'];
+        previewHashNavIndex = 0;
+        postPreviewIframeHash('/');
+        syncPreviewHashNavChrome();
       }
       return;
     }
     if (e.data.type === '__elcode_done__') {
       if (previewTimeout) { clearTimeout(previewTimeout); previewTimeout = null; }
+      previewHashNavStack = ['/'];
+      previewHashNavIndex = 0;
+      postPreviewIframeHash('/');
+      syncPreviewHashNavChrome();
     } else if (e.data.type === '__elcode_log__') {
       appendLog(e.data.level, e.data.args);
     } else if (e.data.type === '__elcode_clear__') {
@@ -3742,8 +4031,12 @@
         createHeaderDropdown('Project', '#5a5', [
           { label: 'New Project', onClick: createNewProject },
           { label: 'Save Project', onClick: function() {
-            saveProject().then(function() {
-              appendLog('info', ['Project "' + currentProject + '" saved.']);
+            flushPendingEditorSave().then(function() {
+              return saveProject();
+            }).then(function() {
+              appendLog('info', ['Project "' + currentProject + '" disimpan (file + metadata).']);
+            }).catch(function(err) {
+              appendLog('error', ['Gagal simpan project: ' + (err && err.message ? err.message : err)]);
             });
           }},
           { label: 'Load Project', onClick: function() { showProjectLoadDialog(); } },
@@ -3758,7 +4051,7 @@
         createHeaderDropdown('Tools', '#555', [
           { label: 'Settings', onClick: function() { showSettingsDialog(); } },
           { label: 'AI Chat', onClick: function() { showChatDialog(); } },
-          { label: 'Preview (canvas)', onClick: function() { showLivePreviewModal(); } },
+          { label: 'Snapshot canvas (thumbnail)', onClick: function() { showLivePreviewModal(); } },
         ]),
         createHeaderDropdown('Account', '#0ea5e9', [
           { label: 'Login', linkName: 'authActionBtn', onClick: function() {
@@ -3886,54 +4179,230 @@
       el('div').link(connector, 'previewWrap').class('elcode-editor').css({
         display: 'flex',
         flexDirection: 'column',
-        width: '450px',
-        minWidth: '180px',
+        width: 'min(580px, 44vw)',
+        minWidth: '220px',
+        maxWidth: '85vw',
         flexShrink: '0',
         height: '100%',
-        backgroundColor: '#1a1a1a',
-        borderLeft: '1px solid #3c3c3c'
+        backgroundColor: '#141414',
+        borderLeft: '1px solid #3c3c3c',
+        boxSizing: 'border-box',
+        padding: '8px'
       }).child([
-        el('div').css({
-          height: '28px',
-          flexShrink: '0',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 8px',
-          backgroundColor: '#252526',
-          borderBottom: '1px solid #333',
-          fontSize: '11px',
-          userSelect: 'none'
-        }).child([
-          el('span').text('Preview').css({ fontWeight: 'bold', color: '#bbb', fontFamily: 'sans-serif' }),
-          el('button').text('Canvas').css({
-            padding: '3px 10px',
-            background: '#0ea5e9',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '11px',
-            fontWeight: '600',
-            fontFamily: 'sans-serif'
-          }).hover(
-            function() { this.style.background = '#38bdf8'; },
-            function() { this.style.background = '#0ea5e9'; }
-          ).click(function(e) {
-            e.stopPropagation();
-            showLivePreviewModal();
-          })
-        ]),
-        el('iframe').link(connector, 'preview').attr('sandbox', PREVIEW_IFRAME_SANDBOX).css({
+        el('div').link(connector, 'previewChromeRoot').css({
           flex: '1',
           minHeight: '0',
-          width: '100%',
-          border: 'none',
-          backgroundColor: '#fff'
-        })
+          display: 'flex',
+          flexDirection: 'column',
+          backgroundColor: '#2b2b2b',
+          borderRadius: '10px',
+          overflow: 'hidden',
+          border: '1px solid #404040',
+          boxShadow: '0 12px 40px rgba(0,0,0,0.5)'
+        }).child([
+          el('div').css({
+            height: '36px',
+            flexShrink: '0',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '0 10px 0 12px',
+            background: 'linear-gradient(180deg, #3d3d3d 0%, #2f2f2f 100%)',
+            borderBottom: '1px solid #1a1a1a',
+            fontSize: '12px',
+            userSelect: 'none'
+          }).child([
+            el('div').css({ display: 'flex', gap: '2px', alignItems: 'center', flexShrink: '0', marginRight: '2px' }).child([
+              el('button')
+                .link(connector, 'previewHashNavBackBtn')
+                .attr('type', 'button')
+                .attr('title', 'Mundur: hash iframe pratinjau (mis. #/home → #/)')
+                .attr('aria-label', 'Mundur riwayat hash iframe pratinjau')
+                .css({
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                  padding: '0',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: 'rgba(0,0,0,0.2)',
+                  color: '#d4d4d4',
+                  cursor: 'pointer',
+                  flexShrink: '0',
+                })
+                .hover(
+                  function() { this.style.background = 'rgba(255,255,255,0.12)'; },
+                  function() { this.style.background = 'rgba(0,0,0,0.2)'; }
+                )
+                .child(el('i').class('fas fa-chevron-left').css({ fontSize: '11px' }))
+                .click(function(e) {
+                  e.stopPropagation();
+                  if (!connector.previewHashNavBackBtn || connector.previewHashNavBackBtn.disabled) return;
+                  previewHashNavBack();
+                }),
+              el('button')
+                .link(connector, 'previewHashNavForwardBtn')
+                .attr('type', 'button')
+                .attr('title', 'Maju: hash iframe pratinjau')
+                .attr('aria-label', 'Maju riwayat hash iframe pratinjau')
+                .css({
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                  padding: '0',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: 'rgba(0,0,0,0.2)',
+                  color: '#d4d4d4',
+                  cursor: 'pointer',
+                  flexShrink: '0',
+                })
+                .hover(
+                  function() { this.style.background = 'rgba(255,255,255,0.12)'; },
+                  function() { this.style.background = 'rgba(0,0,0,0.2)'; }
+                )
+                .child(el('i').class('fas fa-chevron-right').css({ fontSize: '11px' }))
+                .click(function(e) {
+                  e.stopPropagation();
+                  if (!connector.previewHashNavForwardBtn || connector.previewHashNavForwardBtn.disabled) return;
+                  previewHashNavForward();
+                }),
+            ]),
+            el('div').css({ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: '0' }).child([
+              el('span').css({
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: '#ff5f57',
+                display: 'block',
+                boxShadow: '0 0 0 0.5px rgba(0,0,0,0.2)'
+              }),
+              el('span').css({
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: '#febc2e',
+                display: 'block',
+                boxShadow: '0 0 0 0.5px rgba(0,0,0,0.2)'
+              }),
+              el('span').css({
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: '#28c840',
+                display: 'block',
+                boxShadow: '0 0 0 0.5px rgba(0,0,0,0.2)'
+              })
+            ]),
+            el('div').css({
+              flex: '1',
+              minWidth: '0',
+              color: '#e5e5e5',
+              fontWeight: '700',
+              fontFamily: 'system-ui,Segoe UI,sans-serif',
+              letterSpacing: '0.02em',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis'
+            }).text('Pratinjau langsung'),
+            el('button').attr('type', 'button').text('Layar penuh').css({
+              padding: '4px 10px',
+              background: '#404040',
+              color: '#f5f5f5',
+              border: '1px solid #555',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: '600',
+              fontFamily: 'sans-serif',
+              flexShrink: '0'
+            }).hover(
+              function() { this.style.background = '#4d4d4d'; },
+              function() { this.style.background = '#404040'; }
+            ).click(function(e) {
+              e.stopPropagation();
+              toggleLivePreviewChromeFullscreen();
+            })
+          ]),
+          el('div').css({
+            flexShrink: '0',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 8px 8px',
+            backgroundColor: '#252526',
+            borderBottom: '1px solid #1a1a1a'
+          }).child([
+            el('span').text('#').css({
+              color: '#737373',
+              fontWeight: '800',
+              fontSize: '13px',
+              paddingLeft: '2px',
+              flexShrink: '0',
+              fontFamily: 'ui-monospace,monospace'
+            }),
+            el('input')
+              .link(connector, 'previewRouteInput')
+              .attr('type', 'text')
+              .attr('value', '/')
+              .attr('placeholder', '/home')
+              .attr('title', 'Path hash di iframe pratinjau: awal / (#/), Buka /home → #/home; Mundur/Maju hanya untuk iframe.')
+              .css({
+                flex: '1',
+                minWidth: '0',
+                padding: '5px 8px',
+                borderRadius: '6px',
+                border: '1px solid #404040',
+                background: '#1e1e1e',
+                color: '#e5e5e5',
+                fontSize: '12px',
+                outline: 'none',
+                boxSizing: 'border-box',
+                fontFamily: 'ui-monospace, Consolas, monospace'
+              })
+              .on('keydown', function(e) {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  navigateSpaFromPreviewRouteInput();
+                }
+              }),
+            el('button').attr('type', 'button').text('Buka').css({
+              padding: '5px 12px',
+              background: '#0ea5e9',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontWeight: '600',
+              fontFamily: 'sans-serif',
+              flexShrink: '0'
+            }).hover(
+              function() { this.style.background = '#38bdf8'; },
+              function() { this.style.background = '#0ea5e9'; }
+            ).click(function(e) {
+              e.stopPropagation();
+              navigateSpaFromPreviewRouteInput();
+            })
+          ]),
+          el('iframe').link(connector, 'preview').attr('sandbox', PREVIEW_IFRAME_SANDBOX).css({
+            flex: '1',
+            minHeight: '0',
+            width: '100%',
+            border: 'none',
+            backgroundColor: '#fff',
+            display: 'block'
+          })
+        ])
       ]),
     ]),
   ]).load(async function(){
+    pushElcodeAsyncLoader('Memuat editor…');
+    try {
     // area for initialization code
     await import('./ace/ace.js');
     await import('./ace/ext-language_tools.js');
@@ -4089,6 +4558,8 @@
       debounceTimer = setTimeout(function() {
         console.log('[Auto-save] Saving to IndexedDB...');
         saveFile(currentFile, editor.getValue()).then(function() {
+          return saveProject();
+        }).then(function() {
           console.log('[Auto-save] File saved to IndexedDB');
           runPreview();
         }).catch(function(err) {
@@ -4136,7 +4607,7 @@
     }
     if (authUser && apiProjectId) {
       try {
-        await syncRemoteProjectIntoLocal();
+        await syncRemoteProjectIntoLocal({ onlyIfRemoteNewer: true });
       } catch (eSync) {
         console.warn('[init] sync server:', eSync);
       }
@@ -4195,6 +4666,10 @@
     setTimeout(function() { runPreview(); }, 500);
 
     await runEditorStoreImportFlow();
+
+    previewHashNavStack = ['/'];
+    previewHashNavIndex = 0;
+    syncPreviewHashNavChrome();
 
     window.addEventListener('hashchange', function() {
       if (!isEditorRouteHash()) return;
@@ -4285,6 +4760,10 @@
       if (connector.preview) connector.preview.style.pointerEvents = '';
       document.removeEventListener('mousemove', doHDrag);
       document.removeEventListener('mouseup', stopHDrag);
+    }
+
+    } finally {
+      popElcodeAsyncLoader();
     }
 
   });
