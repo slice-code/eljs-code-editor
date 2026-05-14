@@ -33,21 +33,30 @@
           font-size: 1rem;
           line-height: 1.5;
         }
-        /* Store: masonry multi-kolom — hindari column-width: min() di inline (sering diabaikan browser → 1 kolom penuh) */
+        /* Store / My Publish: kontainer justified masonry (posisi dihitung JS) */
         .store-list-masonry {
           width: 100%;
           box-sizing: border-box;
-          column-gap: 1.05rem;
-          column-fill: balance;
+          position: relative;
+          min-height: 1.5rem;
         }
+        /* Store desktop: grid 3 kolom (kartu tinggi bebas; sentinel load-more melebar penuh) */
         @media (min-width: 1024px) {
-          .store-list-masonry { column-count: 3; }
-        }
-        @media (min-width: 640px) and (max-width: 1023.98px) {
-          .store-list-masonry { column-count: 2; }
-        }
-        @media (max-width: 639.98px) {
-          .store-list-masonry { column-count: 1; }
+          .store-list-masonry.store-list--grid-desktop {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 1rem;
+            align-items: start;
+          }
+          .store-list-masonry.store-list--grid-desktop [data-justified-card] {
+            width: 100%;
+            max-width: 100%;
+            min-height: 0;
+          }
+          .store-list-masonry.store-list--grid-desktop [data-store-sentinel] {
+            grid-column: 1 / -1;
+            justify-self: stretch;
+          }
         }
     </style>
 </head>
@@ -98,9 +107,9 @@
     <script type="module">
       window.addEventListener('DOMContentLoaded', async () => {
         const { createDocumentationPage } = await import('./documentation-page.js?v=1.2.3')
-        const { createStorePage } = await import('./store.js?v=1.2.4')
-        const { createStoreDetailPage } = await import('./store-detail.js?v=1.2.4')
-        const { createMyPublishPage } = await import('./my-publish.js?v=1.2.3')
+        const { createStorePage } = await import('./store.js?v=1.2.9')
+        const { createStoreDetailPage } = await import('./store-detail.js?v=1.2.6')
+        const { createMyPublishPage } = await import('./my-publish.js?v=1.2.7')
         let editorLoaded = false;
 
         layout.addPage({
@@ -237,7 +246,7 @@
           hideLayout: true,
           component: async () => {
             if (!editorLoaded) {
-              await import('./code-editor/code.js?v=1.2.7')              
+              await import('./code-editor/code.js?v=1.2.8')              
               editorLoaded = true
             }
             return el('div').child([ codeEditorEl.container ]);

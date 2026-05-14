@@ -1,9 +1,19 @@
+import { attachJustifiedRowsLayout } from './justified-rows-layout.js';
+
 /**
  * Halaman daftar publish milik user (GET /api/editor/store/me).
  * Buka project di editor dengan mengganti project lokal bernama sama (hanya dari alur ini).
  */
 export function createMyPublishPage() {
   const refs = {};
+  let disposeListLayout = null;
+
+  function tearDownListLayout() {
+    if (disposeListLayout) {
+      disposeListLayout();
+      disposeListLayout = null;
+    }
+  }
 
   function formatDate(isoString) {
     try {
@@ -20,6 +30,7 @@ export function createMyPublishPage() {
 
   function setLoading(message) {
     if (!refs.listEl) return;
+    tearDownListLayout();
     el(refs.listEl).empty().child(
       el('div').css({
         border: '1px dashed #cbd5e1',
@@ -33,6 +44,7 @@ export function createMyPublishPage() {
 
   function setError(message) {
     if (!refs.listEl) return;
+    tearDownListLayout();
     el(refs.listEl).empty().child(
       el('div').css({
         border: '1px solid #fecaca',
@@ -52,6 +64,11 @@ export function createMyPublishPage() {
       sessionStorage.setItem('editor:storeImportSource', 'my-publish');
     } catch (e) {}
     window.location.hash = '/editor';
+    try {
+      if (typeof window.__elcode_processStoreImport === 'function') {
+        window.__elcode_processStoreImport();
+      }
+    } catch (e2) {}
   }
 
   async function loadList() {
@@ -60,6 +77,7 @@ export function createMyPublishPage() {
       const res = await fetch('https://slice-code.com/api/editor/store/me', { credentials: 'include' });
       const body = await res.json();
       if (res.status === 401) {
+        tearDownListLayout();
         el(refs.listEl).empty().child([
           el('div').text('Anda belum login. Buka Editor untuk login terlebih dahulu.').css({
             color: '#92400e',
@@ -85,6 +103,7 @@ export function createMyPublishPage() {
 
       const items = Array.isArray(body.data) ? body.data : [];
       if (items.length === 0) {
+        tearDownListLayout();
         el(refs.listEl).empty().child(
           el('div').css({
             border: '1px dashed #cbd5e1',
@@ -116,25 +135,42 @@ export function createMyPublishPage() {
             rowRef.unpublishBtn.textContent = loading ? 'Unpublishing...' : 'Unpublish';
           }
 
-          return el('div').css({
-            border: '1px solid #e5e7eb',
-            borderRadius: '0.95rem',
-            background: '#fff',
-            overflow: 'hidden',
-            boxShadow: '0 10px 30px rgba(15,23,42,0.06)',
-            breakInside: 'avoid',
-            WebkitColumnBreakInside: 'avoid',
-            marginBottom: '0.95rem',
-            display: 'inline-block',
-            width: '100%'
-          }).child([
-            el('img').attr('src', thumb).attr('alt', name).css({
-              width: '100%',
-              height: 'auto',
-              objectFit: 'contain',
-              background: '#f1f5f9'
-            }),
-            el('div').css({ padding: '0.95rem' }).child([
+          return el('div')
+            .attr('data-justified-card', '1')
+            .css({
+              border: '1px solid #e5e7eb',
+              borderRadius: '0.95rem',
+              background: '#fff',
+              overflow: 'hidden',
+              boxShadow: '0 10px 30px rgba(15,23,42,0.06)',
+              display: 'flex',
+              flexDirection: 'column',
+              boxSizing: 'border-box'
+            }).child([
+            el('div').css({
+              flex: '0 0 40%',
+              minHeight: '0',
+              maxHeight: '50%',
+              overflow: 'hidden',
+              background: '#f1f5f9',
+              flexShrink: '0'
+            }).child(
+              el('img').attr('src', thumb).attr('alt', name).css({
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                display: 'block'
+              })
+            ),
+            el('div').css({
+              flex: '1 1 auto',
+              minHeight: '0',
+              overflow: 'hidden',
+              padding: '0.75rem 0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.25rem'
+            }).child([
               el('div').text(name).css({
                 fontWeight: '700',
                 color: '#0f172a',
@@ -144,7 +180,7 @@ export function createMyPublishPage() {
                 textOverflow: 'ellipsis'
               }),
               el('div').css({ color: '#64748b', fontSize: '0.78rem', marginBottom: '0.5rem', fontFamily: 'ui-monospace, monospace' }).text('slug: ' + (slug || '-')),
-              el('div').css({ color: '#94a3b8', fontSize: '0.74rem', marginBottom: '0.65rem', wordBreak: 'break-all' }).text(url || '—'),
+              el('div').css({ color: '#94a3b8', fontSize: '0.74rem', marginBottom: '0.65rem', wordBreak: 'break-all', minHeight: '0', overflow: 'hidden' }).text(url || '—'),
               el('div').css({ fontSize: '0.78rem', color: '#64748b', marginBottom: '0.75rem' }).text('Published: ' + publishedAt),
               el('div').css({
                 marginBottom: '0.65rem'
@@ -171,7 +207,7 @@ export function createMyPublishPage() {
                   opacity: slug ? '1' : '0.5'
                 }).click(function() {
                   if (!slug) return;
-                  window.location.hash = '/store-detail?slug=' + encodeURIComponent(slug);
+                  window.location.hash = '/store-detail?slug=' + encodeURIComponent(slug) + '&from=my-publish';
                 }),
                 el('button').text('Buka di Editor').css({
                   padding: '0.4rem 0.65rem',
@@ -225,6 +261,12 @@ export function createMyPublishPage() {
           ]);
         })
       ).get();
+      disposeListLayout = attachJustifiedRowsLayout(refs.listEl, {
+        gap: 14,
+        minRowHeight: 118,
+        maxRowHeight: 320,
+        baseMeasureWidth: 280
+      });
     } catch (error) {
       setError('Gagal memuat daftar publish: ' + (error.message || error));
     }

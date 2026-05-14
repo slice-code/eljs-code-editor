@@ -304,9 +304,29 @@ export function createStoreDetailPage() {
                 fontWeight: '600'
               }).click(function() {
                 if (!targetSlug) return;
-                try { sessionStorage.setItem('editor:storeSlug', targetSlug); } catch (e) {}
+                try {
+                  sessionStorage.setItem('editor:storeSlug', targetSlug);
+                  var h = window.location.hash || '';
+                  var qi = h.indexOf('?');
+                  var fromMyPublish = false;
+                  if (qi >= 0) {
+                    try {
+                      fromMyPublish = new URLSearchParams(h.slice(qi + 1)).get('from') === 'my-publish';
+                    } catch (eP) {}
+                  }
+                  if (fromMyPublish) {
+                    sessionStorage.setItem('editor:storeImportSource', 'my-publish');
+                  } else {
+                    try { sessionStorage.removeItem('editor:storeImportSource'); } catch (eR) {}
+                  }
+                } catch (e) {}
                 window.location.hash = '/editor';
-              })
+                try {
+                  if (typeof window.__elcode_processStoreImport === 'function') {
+                    window.__elcode_processStoreImport();
+                  }
+                } catch (e3) {}
+              }),
             ])
           ])
         ]),

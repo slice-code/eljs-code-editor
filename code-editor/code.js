@@ -23,6 +23,7 @@
   var pendingThumbnailRequest = null;
   var isPublishing = false;
   var headerDropdownMenus = [];
+  var __editorStoreImportDebounce = null;
   
   // Per-file sessions to maintain separate undo/redo history
   var fileSessions = {};
@@ -192,14 +193,92 @@
   }
 
   // ===== Project Helpers =====
-  function saveProject() {
+  function getProjectRecord(name) {
+    return ensureDB().then(function() {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction(PROJECT_STORE, 'readonly');
+        var req = tx.objectStore(PROJECT_STORE).get(name);
+        req.onsuccess = function() { resolve(req.result || null); };
+        req.onerror = function() { reject(req.error); };
+      });
+    });
+  }
+
+  /** Simpan entri project; gabungkan dengan record lama (apiProjectId, remoteName, dll.). */
+  function saveProject(metaPatch) {
     return ensureDB().then(function() {
       return new Promise(function(resolve, reject) {
         var tx = db.transaction(PROJECT_STORE, 'readwrite');
-        tx.objectStore(PROJECT_STORE).put({ name: currentProject, updatedAt: Date.now() });
+        var store = tx.objectStore(PROJECT_STORE);
+        var req = store.get(currentProject);
+        req.onerror = function() { reject(req.error); };
+        req.onsuccess = function() {
+          var prev = req.result || { name: currentProject };
+          var rec = Object.assign({}, prev, { name: currentProject, updatedAt: Date.now() }, metaPatch || {});
+          store.put(rec);
+        };
         tx.oncomplete = function() { resolve(); };
         tx.onerror = function(e) { reject(e); };
       });
+    });
+  }
+
+  function slugifyLocalProjectName() {
+    return String(currentProject || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+
+  function extractPublishedSlugFromUrl(url) {
+    if (!url) return '';
+    var m = String(url).match(/\/(?:usr_[^/]+\/)([^/?#]+)\/?$/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  /**
+   * Tarik file + metadata server ke IndexedDB (sinkron dengan My Published / project remote).
+   */
+  function syncRemoteProjectIntoLocal() {
+    if (!apiProjectId || !authUser) return Promise.resolve(false);
+    return apiRequest('/api/editor/projects/' + apiProjectId, { method: 'GET' }).then(function(resp) {
+      var data = resp.data || {};
+      var files = Array.isArray(data.files) ? data.files : [];
+      if (files.length === 0) {
+        appendLog('warn', ['Sinkron server: API mengembalikan 0 file — lewati agar project lokal tidak dikosongkan.']);
+        return false;
+      }
+      var remoteName = String(data.name != null ? data.name : '').trim();
+      var remoteDescription = String(data.description != null ? data.description : '').trim();
+      var publishedSlug = String(data.slug || data.published_slug || '').trim();
+      if (!publishedSlug && data.published_url) {
+        publishedSlug = extractPublishedSlugFromUrl(data.published_url);
+      }
+      var serverNames = {};
+      files.forEach(function(f) {
+        if (f && f.name) serverNames[String(f.name).trim()] = true;
+      });
+      return listFiles().then(function(localNames) {
+        var deletes = localNames.filter(function(n) { return !serverNames[n]; });
+        return Promise.all(deletes.map(function(n) { return deleteFile(n); }));
+      }).then(function() {
+        return Promise.all(files.map(function(f) {
+          var fn = (f && f.name) ? String(f.name).trim() : '';
+          if (!fn) return Promise.resolve();
+          var content = f && typeof f.content === 'string' ? f.content : '';
+          return saveFile(fn, content);
+        }));
+      }).then(function() {
+        return saveProject({
+          apiProjectId: apiProjectId,
+          remoteName: remoteName || null,
+          remoteDescription: remoteDescription,
+          publishedSlug: publishedSlug || null
+        });
+      }).then(function() {
+        appendLog('info', ['Disinkronkan dengan server (' + files.length + ' file).']);
+        return true;
+      });
+    }).catch(function(err) {
+      appendLog('warn', ['Sinkron server dilewati: ' + (err.message || err)]);
+      return false;
     });
   }
 
@@ -237,20 +316,26 @@
   function loadProject(name) {
     console.log('[loadProject] Loading project:', name);
     currentProject = name;
-    apiProjectId = null;
     localStorage.setItem('elcode-lastProject', name);
     connector.projectName.textContent = name;
     currentFile = null;
     isLoadingFile = true;
     editor.setValue('', -1);
-    
-    // Clear all file sessions when switching projects
+
     fileSessions = {};
     console.log('[loadProject] Cleared file sessions');
-    
-    refreshFileList();
-    listFiles().then(function(files) {
-      console.log('[loadProject] Files in project:', files);
+
+    getProjectRecord(name).then(function(rec) {
+      apiProjectId = rec && rec.apiProjectId ? rec.apiProjectId : null;
+      return listFiles();
+    }).then(function(files) {
+      var syncP = Promise.resolve(false);
+      if (authUser && apiProjectId) {
+        syncP = syncRemoteProjectIntoLocal();
+      }
+      return syncP.then(function() { return listFiles(); });
+    }).then(function(files) {
+      refreshFileList();
       if (files.indexOf('main.js') !== -1) {
         console.log('[loadProject] Opening main.js');
         openFile('main.js');
@@ -258,13 +343,12 @@
         console.log('[loadProject] Opening first file:', files[0]);
         openFile(files[0]);
       } else {
-        // No files in project, clear editor
         console.log('[loadProject] No files in project');
         isLoadingFile = false;
       }
-      setTimeout(function() { 
+      setTimeout(function() {
         console.log('[loadProject] Running preview');
-        runPreview(); 
+        runPreview();
       }, 300);
     }).catch(function(err) {
       console.error('[loadProject] Failed to list files:', err);
@@ -274,6 +358,14 @@
 
   function renameProject(oldName, newName) {
     ensureDB().then(function() {
+      getProjectRecord(oldName).then(function(prevRec) {
+        var carry = {};
+        if (prevRec) {
+          if (prevRec.apiProjectId) carry.apiProjectId = prevRec.apiProjectId;
+          if (prevRec.remoteName != null) carry.remoteName = prevRec.remoteName;
+          if (prevRec.remoteDescription != null) carry.remoteDescription = prevRec.remoteDescription;
+          if (prevRec.publishedSlug != null) carry.publishedSlug = prevRec.publishedSlug;
+        }
     // Copy all files to new project name, delete old ones
     var tx = db.transaction(FILE_STORE, 'readwrite');
     var store = tx.objectStore(FILE_STORE);
@@ -290,15 +382,18 @@
       var tx2 = db.transaction(PROJECT_STORE, 'readwrite');
       var pStore = tx2.objectStore(PROJECT_STORE);
       pStore.delete(oldName);
-      pStore.put({ name: newName, updatedAt: Date.now() });
+      var newRec = Object.assign({ name: newName, updatedAt: Date.now() }, carry);
+      pStore.put(newRec);
       tx2.oncomplete = function() {
         currentProject = newName;
+        if (carry.apiProjectId) apiProjectId = carry.apiProjectId;
         connector.projectName.textContent = newName;
         appendLog('info', ['Project renamed to "' + newName + '".']);
       };
     };
     });
-  }
+  });
+}
 
   var API_BASE_URL = 'https://slice-code.com';
 
@@ -627,7 +722,11 @@
     }).then(function(resp) {
       apiProjectId = resp.data && resp.data.project_id;
       if (!apiProjectId) throw new Error('project_id tidak ditemukan dari API');
-      return apiProjectId;
+      var nm = String((resp.data && resp.data.name) != null ? resp.data.name : currentProject).trim() || currentProject;
+      var desc = String((resp.data && resp.data.description) != null ? resp.data.description : '').trim();
+      return saveProject({ apiProjectId: apiProjectId, remoteName: nm, remoteDescription: desc }).then(function() {
+        return apiProjectId;
+      });
     });
   }
 
@@ -886,6 +985,38 @@
     return { slug: '', fromMyPublish: false };
   }
 
+  /** True jika hash saat ini adalah halaman editor (#/editor). */
+  function isEditorRouteHash() {
+    try {
+      return /^#\/editor($|\?)/.test(window.location.hash || '');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Impor project dari sessionStorage (slug + sumber); kosongkan session di consumeEditorStoreImportIntent. */
+  function runEditorStoreImportFlow() {
+    if (!editor) return Promise.resolve();
+    var intent = consumeEditorStoreImportIntent();
+    if (!intent.slug) return Promise.resolve();
+    return importStoreProjectFromSlug(intent.slug, { fromMyPublish: intent.fromMyPublish }).then(function() {
+      try {
+        var pathOnly = (window.location.pathname || '') + (window.location.hash || '').split('?')[0];
+        window.history.replaceState({}, '', pathOnly);
+      } catch (e2) {}
+    }).catch(function(err) {
+      appendLog('error', ['Impor project store gagal: ' + (err && err.message ? err.message : err)]);
+    });
+  }
+
+  function scheduleEditorStoreImport() {
+    if (__editorStoreImportDebounce) clearTimeout(__editorStoreImportDebounce);
+    __editorStoreImportDebounce = setTimeout(function() {
+      __editorStoreImportDebounce = null;
+      runEditorStoreImportFlow();
+    }, 60);
+  }
+
   /**
    * Impor project dari Store API ke IndexedDB.
    * @param {string} slug
@@ -917,7 +1048,8 @@
 
       function applyImportToProjectName(finalName) {
         currentProject = finalName;
-        apiProjectId = null;
+        var pid = data.project_id ? String(data.project_id).trim() : '';
+        apiProjectId = pid || null;
         localStorage.setItem('elcode-lastProject', currentProject);
         connector.projectName.textContent = currentProject;
 
@@ -930,8 +1062,18 @@
           return saveFile(file.name, file.content);
         });
 
+        var publishedSlug = String(data.slug || '').trim();
+        if (!publishedSlug && data.published_url) {
+          publishedSlug = extractPublishedSlugFromUrl(data.published_url);
+        }
+
         return Promise.all(saveOps).then(function() {
-          return saveProject();
+          return saveProject({
+            apiProjectId: pid ? pid : null,
+            remoteName: String(data.name || '').trim() || undefined,
+            remoteDescription: String(data.description != null ? data.description : '').trim(),
+            publishedSlug: publishedSlug || undefined
+          });
         }).then(function() {
           refreshFileList();
           var target = 'main.js';
@@ -983,9 +1125,15 @@
   }
 
   /**
-   * Dialog publish: slug + deskripsi (deskripsi disimpan lewat PUT project, lalu POST publish — sesuai api.md).
+   * Dialog publish: slug; judul/deskripsi dari server — publish ulang tidak mengubah judul/deskripsi (PUT nilai server).
+   * @param {{ slugDefault: string, serverMeta: { name: string, description: string, is_published: boolean } }} opts
    */
-  function showPublishDialog(slugDefault, initialDescription) {
+  function showPublishDialog(opts) {
+    opts = opts || {};
+    var slugDefault = opts.slugDefault || 'my-project';
+    var serverMeta = opts.serverMeta || { name: currentProject, description: '', is_published: false };
+    var isRepublish = !!serverMeta.is_published;
+
     var overlayNode;
     function closeDialog() {
       if (overlayNode && overlayNode.parentNode) overlayNode.parentNode.removeChild(overlayNode);
@@ -997,12 +1145,23 @@
     }).get();
     slugInput.value = slugDefault || 'my-project';
 
-    var descInput = el('textarea').attr('placeholder', 'Short description for the Store (optional)').css({
+    var descInput = el('textarea').attr('placeholder', 'Deskripsi untuk Store (opsional)').css({
       width: '100%', minHeight: '88px', resize: 'vertical', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
       fontSize: '13px', padding: '8px 10px', borderRadius: '4px', outline: 'none', boxSizing: 'border-box',
       fontFamily: 'sans-serif'
     }).get();
-    descInput.value = initialDescription || '';
+    descInput.value = String(serverMeta.description != null ? serverMeta.description : '').trim();
+    if (isRepublish) {
+      descInput.setAttribute('readonly', 'readonly');
+      descInput.style.cursor = 'not-allowed';
+      descInput.style.opacity = '0.88';
+    }
+
+    var nameDisplay = el('div').css({
+      width: '100%', background: '#1a1a1a', border: '1px solid #444', color: '#fff',
+      fontSize: '13px', padding: '8px 10px', borderRadius: '4px', boxSizing: 'border-box',
+      wordBreak: 'break-word'
+    }).text(String(serverMeta.name != null ? serverMeta.name : currentProject).trim() || currentProject);
 
     var overlay = el('div').css({
       position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
@@ -1015,12 +1174,16 @@
     }).child([
       el('div').css({ fontSize: '16px', fontWeight: 'bold', color: '#eee', marginBottom: '10px' }).text('Publish project'),
       el('div').css({ fontSize: '11px', color: '#94a3b8', marginBottom: '8px', lineHeight: '1.45' }).text(
-        'Public URL slug. Description is saved on project metadata and shown in the Store (not in the publish request body).'
+        isRepublish
+          ? 'Publish ulang: judul & deskripsi mengikuti server (tidak diubah). Anda bisa mengganti slug jika perlu.'
+          : 'Judul & deskripsi di bawah dari server; edit deskripsi untuk publish pertama. Slug = segmen URL publik.'
       ),
-      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Slug'),
-      el('div').css({ marginBottom: '10px' }).child([el(slugInput)]),
-      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Description'),
-      el('div').css({ marginBottom: '14px' }).child([el(descInput)]),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text(isRepublish ? 'Judul (server)' : 'Judul (server / Store)'),
+      el('div').css({ marginBottom: '10px' }).child([nameDisplay]),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text(isRepublish ? 'Deskripsi (server, read-only)' : 'Deskripsi'),
+      el('div').css({ marginBottom: '10px' }).child([el(descInput)]),
+      el('div').css({ fontSize: '12px', color: '#cbd5e1', marginBottom: '4px' }).text('Slug URL'),
+      el('div').css({ marginBottom: '14px' }).child([el(slugInput)]),
       el('div').css({ display: 'flex', justifyContent: 'flex-end', gap: '8px' }).child([
         el('button').text('Cancel').css({
           padding: '6px 12px', background: '#555', color: '#eee', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
@@ -1033,10 +1196,13 @@
             appendLog('warn', ['Slug publish tidak boleh kosong.']);
             return;
           }
-          var description = String(descInput.value || '').trim();
+          var namePut = String(serverMeta.name != null ? serverMeta.name : currentProject).trim() || currentProject;
+          var descPut = isRepublish
+            ? String(serverMeta.description != null ? serverMeta.description : '').trim()
+            : String(descInput.value || '').trim();
           closeDialog();
           setPublishLoadingState(true);
-          updateRemoteProjectMeta(currentProject, description)
+          updateRemoteProjectMeta(namePut, descPut)
             .then(function() { return syncProjectToApi(); })
             .then(function() { return getThumbnailPayloadForPublish(); })
             .then(function(thumbnail) {
@@ -1047,8 +1213,16 @@
               });
             })
             .then(function(resp) {
-              var url = resp.data && resp.data.published_url ? resp.data.published_url : '';
+              var d = resp.data || {};
+              var url = d.published_url ? d.published_url : '';
               appendLog('info', ['Publish berhasil' + (url ? ': ' + url : '.')]);
+              var slugOut = String(d.slug || '').trim();
+              return saveProject({
+                apiProjectId: (d.project_id && String(d.project_id)) || apiProjectId,
+                remoteName: String(d.name != null ? d.name : '').trim() || undefined,
+                remoteDescription: String(d.description != null ? d.description : '').trim(),
+                publishedSlug: slugOut || undefined
+              });
             })
             .catch(function(err) {
               appendLog('error', ['Publish gagal: ' + (err.message || err)]);
@@ -1071,11 +1245,25 @@
       showLoginDialog();
       return;
     }
-    var slugDefault = currentProject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     ensureRemoteProject()
-      .then(function() { return fetchRemoteProjectDescription(); })
-      .then(function(desc) {
-        showPublishDialog(slugDefault || 'my-project', desc);
+      .then(function() {
+        return apiRequest('/api/editor/projects/' + apiProjectId, { method: 'GET' });
+      })
+      .then(function(resp) {
+        var d = resp.data || {};
+        var slugSrv = String(d.published_slug || d.slug || '').trim();
+        if (!slugSrv && d.published_url) {
+          slugSrv = extractPublishedSlugFromUrl(d.published_url);
+        }
+        var slugDefault = slugSrv || slugifyLocalProjectName() || 'my-project';
+        showPublishDialog({
+          slugDefault: slugDefault,
+          serverMeta: {
+            name: String(d.name != null ? d.name : currentProject).trim() || currentProject,
+            description: String(d.description != null ? d.description : '').trim(),
+            is_published: !!d.is_published
+          }
+        });
       })
       .catch(function(err) {
         appendLog('error', ['Gagal menyiapkan publish: ' + (err.message || err)]);
@@ -3942,6 +4130,17 @@
       currentProject = lastProject;
       connector.projectName.textContent = currentProject;
     }
+    var metaRec = await getProjectRecord(currentProject);
+    if (metaRec && metaRec.apiProjectId) {
+      apiProjectId = metaRec.apiProjectId;
+    }
+    if (authUser && apiProjectId) {
+      try {
+        await syncRemoteProjectIntoLocal();
+      } catch (eSync) {
+        console.warn('[init] sync server:', eSync);
+      }
+    }
 
     var files = await listFiles();
     if (files.length === 0) {
@@ -3995,14 +4194,17 @@
     openFile('main.js');
     setTimeout(function() { runPreview(); }, 500);
 
-    var importIntent = consumeEditorStoreImportIntent();
-    if (importIntent.slug) {
-      await importStoreProjectFromSlug(importIntent.slug, { fromMyPublish: importIntent.fromMyPublish });
-      try {
-        var cleanUrl = window.location.pathname + window.location.hash;
-        window.history.replaceState({}, '', cleanUrl);
-      } catch (e) {}
-    }
+    await runEditorStoreImportFlow();
+
+    window.addEventListener('hashchange', function() {
+      if (!isEditorRouteHash()) return;
+      scheduleEditorStoreImport();
+    });
+    try {
+      window.__elcode_processStoreImport = function() {
+        if (isEditorRouteHash()) scheduleEditorStoreImport();
+      };
+    } catch (eHook) {}
 
     // Resizable logs panel
     var resizer = connector.resizer;
